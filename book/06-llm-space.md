@@ -9,8 +9,8 @@ learning_objectives:
   - 能用端口与适配器（HostServices seam）让同一套 React UI 跑在两个完全不同的运行时里——桌面端有真实文件系统 / 模型 / 工具，Web 端只读展示——UI 包对宿主运行时零依赖
   - 能把 Agent loop 吐出的细粒度事件流（文本增量、工具调用分片、思考块、用量）折叠成一份不断增长、可增量渲染的消息快照，即 chat / agent UI 通用的 reducer / event-sourcing 模式
   - 能用 copy-on-write 快照做 O(1) 撤销 / 重做，并用条数上限 + 图片字节预算双闸控制历史内存占用
-feishu_url: ""
-last_synced: ""
+feishu_url: "https://fivwvysqdz.feishu.cn/wiki/KvpuwoPqDirEEykcbQxchbxDnUe"
+last_synced: "2026-07-26"
 ---
 
 ## 1. LLM Space
@@ -29,13 +29,13 @@ last_synced: ""
 
 ### 1.2 四个可迁移工程模式
 
-1. **在没有原生流的边界上模拟一条流**。桌面端渲染进程要消费 bun 主进程跑出来的 Agent 事件流，但它俩之间的 Electrobun RPC 只有"请求-响应"和"发了不管"两种原语，都不是流。LLM Space 用一个 `streamId` 关联 + 一个 wake/notify 单槽信号 + 一个 FIFO 缓冲，把"发了不管"的消息重新拼回一个能 `for await`、能取消、能清理的异步迭代器。任何回调式 / 事件式 / WebSocket 式的推送源，都能用这套骨架变成 `for await`。
+1. **在没有原生流的边界上模拟一条流**。桌面 app 的两个进程之间隔着一条通道，这条通道只能发一条条离散消息，不支持"流"。项目把这些离散消息重新拼成一个能循环消费、能中途取消的事件流。任何回调式 / WebSocket 式的推送源，都能套用这套骨架。
 
-2. **一套 UI，两个运行时**。同一个 React Thread Playground，既跑在桌面 app 里（有真文件系统、真模型、真工具执行），又跑在一个纯静态网页里（只读展示别人分享的 Thread，没有后端）。它不是 fork 两份，也不是满屏 `if (isDesktop)`，而是把宿主能力抽成一组接口用 React context 注入——端口与适配器。UI 包对 Electrobun 零依赖。
+2. **一套 UI，两个运行时**。同一套界面，既跑在功能齐全的桌面 app 里，又跑在一个只读的网页里。做法不是复制两份代码，而是把界面对外界的需求抽成一组接口，每个运行时各注入一份自己的实现——端口与适配器。
 
-3. **把事件流折叠成消息快照**。Agent loop 吐出的是一堆细粒度事件：文本增量、工具调用的名字先到参数后到、思考块、token 用量。UI 要的是一份份不断长大的 Message 对象。中间那层 reducer 就是把事件折叠成快照，是所有 chat / agent UI 的通用模式。
+3. **把事件流折叠成消息快照**。模型是一个字一个字、一个片段一个片段往外吐的，界面要的却是一条条完整、不断长大的消息。中间用一个纯函数把碎片折叠成消息——这是所有聊天 / Agent 界面的通用做法。
 
-4. **copy-on-write 撤销 / 重做**。编辑 prompt、工具、消息都要能撤销。最朴素的做法是每次改动深拷贝整个 Thread——但 Thread 里带图片附件，快照会很大。LLM Space 用 copy-on-write 让快照共享没改动的子结构（撤销是 O(1) 的指针移动），再用条数上限加图片字节预算双闸淘汰旧快照。
+4. **copy-on-write 撤销 / 重做**。编辑要能撤销，但每次改动都深拷贝整个 Thread（里面还内联着图片）会撑爆内存。项目让新旧快照共享没改动的部分，于是撤销变成一次指针移动，再用内存预算淘汰旧快照。
 
 本地对照源码看：
 
@@ -71,7 +71,11 @@ mise run dev         # 启动桌面 app 开发模式
 
 LLM Space 最值得先建立的一张地图，是它的三个运行时上下文，以及贯穿它们的两条数据流。
 
-桌面壳用的是 Electrobun（一个跨平台桌面框架：系统 WebView 渲染 UI、Bun 跑主进程，定位类似 Electron / Tauri，但更轻）。它把桌面 app 拆成两个进程：**bun 主进程**（`apps/desktop/src/bun/`）握着原生窗口、菜单、文件系统、模型配置和 Agent 流式执行；**webview 渲染进程**（`apps/desktop/src/app`、`src/components` + 共享的 `packages/ui`）是那套 React UI。它俩之间只有一条类型化的 RPC 通道。第三个上下文是 **Web 静态站**（`apps/web`），它复用同一套 `packages/ui`，只读展示别人分享的 Thread，没有任何后端。
+桌面壳用的是 Electrobun（一个跨平台桌面框架：系统 WebView 渲染 UI、Bun 跑主进程，定位类似 Electron / Tauri，但更轻）。它把桌面 app 拆成两个进程，加上一个独立的 Web 站，一共三个运行时上下文：
+
+- **bun 主进程**（`apps/desktop/src/bun/`）：握着原生窗口、菜单、文件系统、模型配置和 Agent 流式执行。
+- **webview 渲染进程**（`apps/desktop/src/app` + 共享的 `packages/ui`）：那套 React UI。它和主进程之间只有一条类型化的 RPC 通道。
+- **Web 静态站**（`apps/web`）：复用同一套 `packages/ui`，只读展示别人分享的 Thread，没有任何后端。
 
 图 6-1 是整个系统的骨架。
 
@@ -107,7 +111,14 @@ graph TB
 
 图里两条最重要的线：
 
-一条是**运行一次 Thread 的数据流**。UI 触发 Zustand store 的 `run()` → 调 core 的 `streamThread()`，塞进去一个 `AgentTransport` → 桌面端这个 transport 是 `createRpcTransport()`，把请求通过 RPC 送到 bun 侧 → bun 的 `StreamThreadController.run()` 迭代 `streamAgent()`，后者驱动 pi 框架的 `agentLoopContinue()` 真正打模型 → 吐回来的 `AgentEvent` 流经 RPC 回到渲染进程 → `reduceMessages()` 折叠成消息 → Zustand 更新 → UI 重渲染。这条线跨了两个进程、两次形态转换（迭代器 → 消息 → 迭代器），4.1 和 4.3 节分别讲两端。
+一条是**运行一次 Thread 的数据流**，它从 UI 出发、跨过 RPC 到主进程打模型、再流回 UI，一共这么几跳（`pi` 是 LLM Space 底层用的轻量 Agent 框架，`agentLoopContinue` 就来自它）：
+
+1. UI 点 Run，触发 store 的 `run()`，调 core 的 `streamThread()`，塞进去一个 `AgentTransport`；
+2. 桌面端这个 transport 是 `createRpcTransport()`，把请求通过 RPC 送到 bun 侧；
+3. bun 的 `StreamThreadController.run()` 迭代 `streamAgent()`，后者驱动 pi 的 `agentLoopContinue()` 真正打模型；
+4. 吐回来的 `AgentEvent` 流经 RPC 回到渲染进程，`reduceMessages()` 折叠成消息，UI 重渲染。
+
+这条线跨了两个进程、两次形态转换（迭代器 → 一条条离散消息 → 又拼回迭代器），4.1 和 4.3 节分别讲这两次转换的两端。
 
 另一条是**同一套 UI 跑在两个宿主里**。`packages/ui` 里的 Thread Playground 不知道自己跑在桌面还是网页——它只调一个 `useHostServices()` 拿宿主能力。桌面端注入的是 Electrobun 撑腰的真实现，Web 端注入的是一堆只读空壳。4.2 节讲这个 seam。
 
@@ -119,7 +130,7 @@ graph TB
 | **AgentTransport** | 流式传输的接缝：一个 `(request, {signal}) => AsyncIterable<AgentEvent>` 的函数 | `packages/core/src/client/transport.ts` |
 | **HostServices** | 宿主能力注入的接缝：transport / 工具执行 / 文件 / 导航等，按运行时换实现 | `packages/ui/src/host/types.ts` |
 | **AgentEvent → reduceMessages** | 事件流折叠成消息快照的 reducer | `packages/core/src/client/reducer.ts` |
-| **thread-store** | 每个打开的 Thread 一个 Zustand store，含 copy-on-write 撤销历史 | `packages/ui/src/components/thread-playground/stores/` |
+| **thread-store** | 每个打开的 Thread 一个 Zustand（轻量 React 状态管理库）store，含 copy-on-write 撤销历史 | `packages/ui/src/components/thread-playground/stores/` |
 
 这五个抽象里，Thread 是地基，其余都围着它转。它就是一个 `.json`，落在 `~/.llm-space/workspace/` 下，文件名即 UI 标题。剥掉细节，骨架长这样：
 
@@ -153,6 +164,14 @@ graph TB
 
 先说人话：桌面 app 里，真正打模型、一个 token 一个 token 往外吐的是 bun 主进程；负责把这些 token 画到屏幕上的是 webview 渲染进程。这两个进程之间隔着一条 RPC 通道。问题是——**这条通道不支持流**。
 
+这一节的代码建立在三个 JavaScript 概念上，先用一句话垫平（熟的可跳过）：
+
+- **generator（生成器）**：一种能中途暂停的函数，执行到 `yield` 就吐出一个值并挂起，下次被拉动时从这儿接着跑。`async function*` 就是异步版的生成器。
+- **异步迭代器（async iterable）**：能被 `for await` 一次取一个值的数据源，每个值都可能要等一会儿才到（比如等网络）。一个 `async function*` 天然就是异步迭代器。
+- **`for await (const x of it)`**：能等待每个值的 for 循环，值没到就停在那儿等。
+
+这一节要做的事，一句话讲完：**把 bun 侧发来的一条条离散消息，包装成一个异步迭代器，让上层能用 `for await` 一个个消费。**
+
 #### 4.1.1 痛点：RPC 只有"一问一答"和"发了不管"，都不是流
 
 Electrobun 的 RPC（底层是 `rpc-anywhere`）只给两种原语（`apps/desktop/src/shared/rpc.ts`）：
@@ -173,7 +192,7 @@ for await (const event of transport(request, { signal })) { ... }
 | 方案 | 怎么做 | 代价 |
 |---|---|---|
 | 回调 / EventEmitter | 传进去 `onEvent`、`onDone`、`onError` 三个回调，推给你 | 调用方要自己管状态机、拼消息、处理取消和清理；控制流散在回调里，和 `async/await` 割裂 |
-| 用一次 request 攒完再返回 | 等 Agent 全跑完，一次性把所有事件塞进响应 | 丢掉流式：用户盯着空屏等几十秒；且撞 1 秒 / 5 分钟超时上限 |
+| 用一次 request 攒完再返回 | 等 Agent 全跑完，一次性把所有事件塞进响应 | 丢掉流式：用户盯着空屏等几十秒；且会撞 request 的超时上限 |
 | **fire-and-forget 消息 + 手搓异步迭代器** | 用 `streamId` 关联，每个事件发一条 message，消费端把消息缓冲起来喂给一个 async generator | 要自己写缓冲、信号、终止协议、清理——但一次写好就藏在 transport 里，上层完全无感 |
 
 LLM Space 选第三条。关键在于它先定义了一个极简的接缝，让"用什么通道"成为唯一的变量。
@@ -248,9 +267,9 @@ const onResponse = (message: StreamThreadResponsePayload) => {
 };
 ```
 
-bun 侧同一个 `streamId` 也用来索引 `AbortController`，取消时能精确找到那一次 run。
+bun 侧同一个 `streamId` 也用来索引 `AbortController`（`AbortController` 是标准的取消句柄，`.abort()` 一发，正在监听它 `signal` 的异步操作就会中止），取消时能精确找到那一次 run。
 
-**部件二：wake/notify 单槽信号（核心 trick）。** generator 需要一个地方"等下一条消息"，但消息是通过同步回调进来的，回调没法直接 `await`。它们用一个一次性 resolver 把回调和 await 焊起来（`rpc-transport.ts:29-32`）：
+**部件二：wake/notify 信号（核心 trick）。** 一句话直觉：**generator 没数据时就睡着，来了消息就被拍醒。** generator 需要一个地方"等下一条消息"，但消息是通过同步回调进来的，回调没法直接 `await`。做法是：generator 抽干缓冲、又还没结束时，就停在一个空 Promise 上睡着，把这个 Promise 的 `resolve`（那个"拍醒"开关）存进变量 `wake`；每来一条消息，回调就调 `wake()` 把它拍醒，再把开关清空、用完即焚（`rpc-transport.ts:29-32`）：
 
 ```ts
 const notify = () => {
@@ -259,7 +278,7 @@ const notify = () => {
 };
 ```
 
-generator 把缓冲抽干、又还没结束时，就停在一个 Promise 上，把它的 `resolve` 存进 `wake`；每来一条消息，回调里 `notify()` 把它叫醒。这是一个手搓的单槽条件变量。
+写过多线程的读者会认出来，这就是一个手搓的单槽条件变量（condition variable，操作系统里"没满足条件就等、条件好了被唤醒"的线程同步原语）——只不过这里用一个 Promise 当"睡一觉"，用 `wake` 这一个槽当唤醒开关。
 
 **部件三：缓冲 + 终止协议。** 主循环长这样（`rpc-transport.ts:65-95`，为聚焦省去缓冲压缩细节）：
 
@@ -591,7 +610,7 @@ case "toolcall_delta": {
 
 **取舍一：节流的是渲染，不是折叠。** 每一个事件都要 reduce（不能漏，漏了消息就断），但推给 React 最多一帧一次。它用 `createFrameThrottle` 按帧对齐，源码明确说明逐事件 `set()` 不安全、且每帧重渲染整份增长中的文档太贵（`thread-store.ts:999-1010`）。对比很多聊天 UI 直接在 `onDelta` 里 `setState`，高频流下会掉帧——分离"折叠频率"和"渲染频率"是关键。
 
-**取舍二：快照即持久化形态。** reducer 吐出的就是最终要存盘的 `AssistantMessage`（严格的 typebox schema）。跑完一轮"提交"消息，只是把最后一份快照挪进数组（`thread-store.ts:976-982`）。累积态和持久态是同一个东西，省掉了一次"渲染模型 → 存储模型"的转换。
+**取舍二：快照即持久化形态。** reducer 吐出的就是最终要存盘的 `AssistantMessage`（用 typebox——一个 TS 的 schema 定义 + 校验库，类似 zod——严格定义了形状）。跑完一轮"提交"消息，只是把最后一份快照挪进数组（`thread-store.ts:976-982`）。累积态和持久态是同一个东西，省掉了一次"渲染模型 → 存储模型"的转换。
 
 **取舍三：错误不 reject，而是塞进消息里再 throw。** 模型 API 失败时，Agent loop 不是让流 reject，而是正常跑完、把错误塞进助手消息的 `errorMessage`。reducer 在 `agent_end` 事件上检查到任何助手消息带 `errorMessage` 就**主动 throw**（`reducer.ts:84-89`），store 的 try/catch 接住、标记这次 run 失败、并把它排除出 run 历史。错误路径和正常路径共用同一条事件流，只在末尾分叉。
 
@@ -688,7 +707,19 @@ export function recordSnapshot(history: ChangeHistory, next: Thread): ChangeHist
 }
 ```
 
-字节核算是最妙的一段。因为结构共享，一张旧图片只有在**没有任何新快照还引用它**时才真的占内存。所以 `_retainedImageBytes` 只统计**旧快照里有、但当前态没有**的图片，且用**对象身份**（`Set` 存对象引用）判断是否共享、每个唯一对象只数一次（`thread-history.ts:46-67`）：
+字节核算是最妙的一段。先建立直觉：因为结构共享，多个快照可能指向**同一个**图片对象；一张图片只有在**没有任何当前还在用的地方引用它**时，才算是"纯粹为撤销才占着的内存"。图 6-6 把这层引用关系画出来。
+
+```mermaid
+graph TB
+    S0[旧快照 S0] --> imgA[图片A 当前态也在用]
+    S1[旧快照 S1] --> imgA
+    Cur[当前态 current] --> imgA
+    S1 --> imgB[图片B 当前态已删]
+    imgA --> Free[对预算贡献 0]
+    imgB --> Counted[计入 64 MB 预算]
+```
+
+看这张图该看到：图片 A 被 S0、S1、当前态一起指向，删不得，所以它不算历史的账；图片 B 只剩旧快照 S1 还留着，它才是"为撤销付的内存"。`_retainedImageBytes` 就照这个规则来——只统计**旧快照里有、但当前态没有**的图片，用**对象身份**（`Set` 存对象引用）判断是否共享，每个唯一对象只数一次（`thread-history.ts:46-67`）：
 
 ```ts
 const live = new Set<unknown>(_imageContents(current));   // 当前态还在用的图片
@@ -703,7 +734,9 @@ for (/* 遍历除当前态外的旧快照 */) {
 }
 ```
 
-体现核心设计的是 `!live.has(content)` 这一行：一张仍在当前 Thread 里的图片，不管多少快照引用它，对历史预算的贡献是**零**。只有纯粹为了撤销才留着的图片才算进 64 MB 天花板。（`_imageContents` 只遍历 `role === "user"` 的消息，所以这里算的是用户上传的图片附件；助手消息里的图片不计入这个预算。）这就是注释说的"只被撤销历史留着的图片负载"——而这套核算能成立，恰恰**因为**更新是 copy-on-write 的，对象身份才是可靠的共享判据。
+体现核心设计的是 `!live.has(content)` 这一行：一张仍在当前 Thread 里的图片，不管多少快照引用它，对历史预算的贡献是**零**。只有纯粹为了撤销才留着的图片才算进 64 MB 天花板，也就是注释说的"只被撤销历史留着的图片负载"。
+
+这套核算能成立，恰恰**因为**更新是 copy-on-write 的——只有 copy-on-write 才能保证"同一张图没变过就还是同一个对象"，对象身份才成为可靠的共享判据。（一个小限定：`_imageContents` 只遍历 `role === "user"` 的消息，所以这里算的是用户上传的图片附件，助手消息里的图片不计入这个预算。）
 
 #### 4.4.5 三条关键取舍
 
@@ -711,7 +744,7 @@ for (/* 遍历除当前态外的旧快照 */) {
 
 **取舍二：run 元数据不该被文本编辑回退。** 撤销恢复的是旧 Thread，但 `runHistory`、`evaluations` 这些是持久的 run 元数据，撤销一次 prompt 编辑不该把它们也倒回去。store 用"重新嫁接 + 原地改写游标处快照"解决：撤销时把**当前**的 run 元数据嫁接到恢复出的旧 Thread 上，再把这个组装好的 thread 写回 `snapshots[index]`，让存储引用和实时态一致（`thread-store.ts:1250-1272`）。撤销只回退内容，不回退 run 历史。
 
-**取舍三：简单胜过渐进最优。** 字节淘汰的 `while` 循环每轮都重算 `_retainedImageBytes`（O(快照数 × 图片数) 的扫描），每次 `shift()` 又是 O(n)。在 100 条上限下这些都无所谓。这是一个"正确但非渐进最优"的清醒选择——如果上限调到几万条才需要优化。对照 Immer / Redux 那种用持久化数据结构（HAMT）做结构共享的方案，这里手写浅展开更轻、更好懂，代价是核算是线性扫描而非增量维护。
+**取舍三：简单胜过渐进最优。** 字节淘汰的 `while` 循环每轮都重算 `_retainedImageBytes`（O(快照数 × 图片数) 的扫描），每次 `shift()` 又是 O(n)。在 100 条上限下这些都无所谓。这是一个"正确但非渐进最优"的清醒选择——上限调到几万条才需要优化。对照 Immer / Redux 那种用专门的不可变数据结构做结构共享的方案，这里手写浅展开更轻、更好懂，代价是字节核算走的是线性全扫描，而不是增量维护一本账。
 
 #### 4.4.6 自己实现最小版本
 
@@ -761,16 +794,15 @@ function record<T>(h: History<T>, next: T, opts: {
 - **服务端从不真跑工具**（`stepByStep: true`）是调试器的产品选择，不是通用最佳实践。它专门为"每一步停下来给人看"设计。真要做自动连跑的生产 Agent，工具就得在服务端执行，别把这个单步语义搬过去。
 - **字节核算是线性全扫描**（4.4 取舍三）。100 条上限下无所谓，但如果你的历史要留几万条，每次淘汰都全扫一遍会变成瓶颈——那时才需要增量维护的字节账本。
 
-## 7. 自己写一个 mini 版的路线图
+## 7. 自己写一个 mini 版：从哪下手
 
-四个模块各自的 mini 骨架前面都给了。把它们拼成一个能跑的最小 Agent Playground，大概是这样一条一到两周的线：
+四个模块各自的 mini 骨架前面都给了，这里只说把它们拼成一个最小 Agent Playground 时的**实现顺序**——顺序错了会白走弯路。
 
-1. **先立数据模型和 reducer（第 3-4 天）**。定义 `Thread`（模型 + system prompt + 工具 + 消息）和 `AgentEvent` 事件流，把 4.3 的 `reduce(state, event)` 写出来单测跑通——这是整个应用的心脏，先在纯 Node 里用假事件流喂熟。
-2. **接一个真流式传输（第 5-7 天）**。先用最简单的形态：浏览器里 `fetch` + SSE 打模型，套 4.1 的 `AgentTransport` 接口。这一步先不碰桌面 / RPC，让 `for await` 事件 → reduce → 渲染这条线端到端跑起来。
-3. **抽出 HostServices 接缝（第 8-10 天）**。把"执行工具""读文件""打模型"这些外界能力抽成 4.2 的接口，先只写一个真实现。这一步的价值在后面——当你想把同一套 UI 再塞进 Electron / Tauri 桌面壳时，只需再写一个适配器，UI 一行不改。
-4. **加撤销 / 重做（第 11-12 天）**。套 4.2 的 `record/undo/redo`，先只做条数上限；等你真的往消息里塞图片附件、发现内存涨了，再加 4.4 的字节预算。
+- **reducer 和数据模型先行**：先定义 `Thread` 和 `AgentEvent`，把 4.3 的 `reduce(state, event)` 在纯 Node 里用假事件流喂熟。它是整个应用的心脏。
+- **传输和宿主接缝随后**：先用浏览器 `fetch` + SSE 套上 4.1 的 `AgentTransport`，让"事件 → reduce → 渲染"端到端跑通；这时再按 4.2 抽 HostServices，将来换桌面壳只多写一个适配器。
+- **撤销历史最后**：它是增量优化，先只做条数上限，真塞了图片再加 4.4 的字节预算。
 
-顺序的关键是：reducer 和数据模型先行（它是地基），传输和宿主接缝随后（它们是可替换的边缘），撤销历史最后（它是增量优化）。反过来先纠结桌面壳和 RPC，会在还没有一个能跑的核心时就陷进胶水代码。
+反过来先纠结桌面壳和 RPC，会在还没有一个能跑的核心时就陷进胶水代码。
 
 ## 8. 延伸阅读
 
