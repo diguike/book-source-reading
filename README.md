@@ -39,6 +39,7 @@
 - [第 4 章　claude-tap：抓 AI Coding Agent 流量的本地代理](book/04-claude-tap.md)
 - [第 5 章　botmux：把 AI 编程 CLI 投影到飞书的会话编排器](book/05-botmux.md)
 - [第 6 章　LLM Space：给 Agent 开发者的本地调试工作台](book/06-llm-space.md)
+- [第 7 章　vercel-labs/skills：Agent Skill 的规范、版本与分发](book/07-vercel-skills.md)
 
 后续收录的项目会持续追加到这里。
 
