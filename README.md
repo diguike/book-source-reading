@@ -73,7 +73,7 @@
 
 ## 关于作者
 
-[diguike](https://github.com/diguike) — AI Agent 工程系列书籍作者。其他作品:
+[diguike](https://github.com/diguike) — Agent 工程师，全栈工程师出身，做 Agent 自进化、长程 Agent、AI 资产建设与团队 AI 体系搭建。AI Agent 工程系列书籍作者，其他作品:
 
 - 《Hermes Agent 源码解读》
 - 《OpenClaw 源码解析》
