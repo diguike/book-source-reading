@@ -11,14 +11,14 @@ learning_objectives:
   - 能用 .well-known 端点在内网自建分发源，并知道它在企业环境里真正会卡住的地方
   - 能用注册表加 CI 回写文档的方式，让一个要接海量社区 PR 的适配层不靠人肉维护
 feishu_url: "https://fivwvysqdz.feishu.cn/wiki/THjJwpJ4piHUm3kLIbPcdFJpnMb"
-last_synced: "2026-07-27"
+last_synced: "2026-08-02"
 ---
 
 ## 1. vercel-labs/skills
 
 [vercel-labs/skills](https://github.com/vercel-labs/skills) 是 `npx skills` 这个命令背后的 CLI，把一个 Agent Skill 从 GitHub 仓库、任意 git 地址、企业内网 URL 或本地路径，装进你机器上任何一个 AI 编程工具的技能目录。它是 skill 的包管理器。
 
-有意思的地方在它站的位置。Agent Skills 这个格式没有中央仓库，没有版本号，也没有 manifest 文件，可它已经被 70 多个 agent 产品支持。一个没有 registry 的生态，怎么完成安装、更新、锁版本、私有分发这四件包管理器的活儿？这个 CLI 是当前事实上的答案——虽然读完你会发现，其中有一件它其实没做成。
+有意思的地方在它站的位置。Agent Skills 这个格式没有中央仓库，没有版本号，也没有 manifest 文件，可它已经被 70 多个 agent 产品支持。一个没有 registry 的生态，怎么完成安装、更新、锁版本、私有分发这四件包管理器的活儿？这个 CLI 是当前事实上的答案，虽然读完你会发现，其中有一件它其实没做成。
 
 ### 1.1 痛点：团队建 Skill 库，第一天撞上的四个问题
 
@@ -30,7 +30,7 @@ last_synced: "2026-07-27"
 
 **规范的三层结构，以及以哪一层为准。** Agent Skills 有一份人读的规范文档、一个官方参考校验器、一个跑在几千万次安装上的真实实现，三者在字段白名单、命名字符集、目录名匹配上互不一致。搞清楚差异在哪，是定任何一份团队资产格式的第一步。
 
-**没有版本号的生态怎么做版本控制，以及内容哈希的边界在哪。** 这一章会把这套机制拆开看，也会指出它做不到的事——它能告诉你"上游变了"，不能告诉你"我装到的是对的"。这两件事在文章里经常被混为一谈，包括这个项目自己的文档。Go modules 用 dirhash 加伪版本把同一道题做完了，我们会拿它当参照。
+**没有版本号的生态怎么做版本控制，以及内容哈希的边界在哪。** 这一章会把这套机制拆开看，也会指出它做不到的事，它能告诉你"上游变了"，不能告诉你"我装到的是对的"。这两件事在文章里经常被混为一谈，包括这个项目自己的文档。Go modules 用 dirhash 加伪版本把同一道题做完了，我们会拿它当参照。
 
 **一份内容多个目录一次更新。** 主副本目录加相对符号链接，加上符号链接失败时的降级路径和路径穿越防护。
 
@@ -47,7 +47,7 @@ cd skills && git checkout v1.5.20
 
 ## 2. 5 分钟跑起来
 
-不用装，`npx` 直接跑。看一个仓库里有哪些 skill：
+不用装，`npx` 直接跑。我们先看一个仓库里有哪些 skill：
 
 ```bash
 npx skills add vercel-labs/agent-skills --list
@@ -89,7 +89,7 @@ skills-lock.json                              # 锁文件，提交进 git
 
 ## 3. 全景架构
 
-一次 `skills add` 干的事分五个阶段，图 7-1 是整条主链路，后面每个模块都挂在这张图的某一段上。
+我们先把一次 `skills add` 干的事走一遍，它分五个阶段，图 7-1 是整条主链路，后面每个模块都挂在这张图的某一段上。
 
 ```mermaid
 graph TB
@@ -151,7 +151,7 @@ graph TB
 
 #### 4.1.1 一个格式，三份互不一致的标准
 
-规范只强制两个字段：`name` 和 `description`。其他全是可选。
+规范只强制两个字段：`name` 和 `description`，其他全是可选。我们先看这两个字段。
 
 但"规范"这个词在这里指三样东西。规范落在三个地方：[agentskills.io/specification](https://agentskills.io/specification) 上一份人读的散文文档（源码在 `agentskills/agentskills` 的 `docs/specification.mdx`，无版本号）；一个叫 `skills-ref` 的 Python 参考校验器，README 自称"仅供演示，不适合生产"；以及跑在几千万次安装上的这个 CLI 和各个 agent 自己的加载器。
 
@@ -240,11 +240,11 @@ graph TB
 
 图 7-2：skill 的三段式加载。第一段对所有 skill 恒定发生，后两段只对被激活的 skill 发生。
 
-这个机制决定了 description 是 agent 判断"要不要用这个 skill"的唯一依据——正文它还没读。所以 description 必须同时写清做什么和什么时候用。规范文档给的正反例对比很直白：`Helps with PDFs.` 是差的，好的那条是 `Extracts text and tables from PDF files, fills PDF forms, and merges multiple PDFs. Use when working with PDF documents or when the user mentions PDFs, forms, or document extraction.`——它塞进了具体的触发关键词。这不是啰嗦，是给检索器喂词。一个内部 skill 如果没人用，九成问题出在 description 太抽象，而不是正文写得不好。
+这个机制决定了 description 是 agent 判断"要不要用这个 skill"的唯一依据，正文它还没读。所以 description 必须同时写清做什么和什么时候用。规范文档给的正反例对比很直白：`Helps with PDFs.` 是差的，好的那条是 `Extracts text and tables from PDF files, fills PDF forms, and merges multiple PDFs. Use when working with PDF documents or when the user mentions PDFs, forms, or document extraction.`：它塞进了具体的触发关键词。这不是啰嗦，是给检索器喂词。一个内部 skill 如果没人用，九成问题出在 description 太抽象，而不是正文写得不好。
 
 第一段那个"每个约 100 tokens"是条真实的预算约束，而且是这一节里对团队决策影响最大的一句。它对每一次对话都生效，装 50 个 skill 就是每轮对话固定烧 5K tokens 的上下文。内部 skill 库不是越大越好，超过某个数量就该按项目拆分安装，而不是全组全局安装。
 
-正文那一段的建议是低于 500 行，细节放进 `references/` 让 agent 按需读。目录约定是 `SKILL.md` 加可选的 `scripts/`、`references/`、`assets/`，引用其他文件用相对路径，且规范明确建议只深一层——agent 顺着链子读三层文件的成本，比一开始就写在正文里还高。
+正文那一段的建议是低于 500 行，细节放进 `references/` 让 agent 按需读。目录约定是 `SKILL.md` 加可选的 `scripts/`、`references/`、`assets/`，引用其他文件用相对路径，且规范明确建议只深一层。agent 顺着链子读三层文件的成本，比一开始就写在正文里还高。
 
 #### 4.1.3 规范为什么故意只有六个字段
 
@@ -252,7 +252,7 @@ graph TB
 
 > We maintain a high bar for additions to the spec — it is much easier to add things to a specification than to remove them. Every new feature adds complexity that all implementers must understand and support. When in doubt, leave it out.
 
-治理上配套的几条：提案走 Discussions 不走 Issues，而且必须带着你实际撞到的问题来，不收理论探讨；不收社区提交的 skill，项目不维护 skill 目录；连参考校验器的功能 PR 也不收，只收 bug 报告。这套克制的结果，就是这个格式半年铺到 70 多个产品——一个 agent 产品支持 skill 的成本是"扫一个目录、读 frontmatter、把 name 和 description 拼进 system prompt"，半天工作量。参考实现里那个生成 prompt 的函数只有 50 行（`skills-ref/src/skills_ref/prompt.py:9-58`），输出就是一段 `<available_skills>` XML。
+治理上配套的几条：提案走 Discussions 不走 Issues，而且必须带着你实际撞到的问题来，不收理论探讨；不收社区提交的 skill，项目不维护 skill 目录；连参考校验器的功能 PR 也不收，只收 bug 报告。这套克制的结果，就是这个格式半年铺到 70 多个产品：一个 agent 产品支持 skill 的成本是"扫一个目录、读 frontmatter、把 name 和 description 拼进 system prompt"，半天工作量。参考实现里那个生成 prompt 的函数只有 50 行（`skills-ref/src/skills_ref/prompt.py:9-58`），输出就是一段 `<available_skills>` XML。
 
 对比同类格式的选择：
 
@@ -267,13 +267,13 @@ graph TB
 
 规范自身怎么迭代？答案是：它没有版本号，没有 tag，没有 release。`agentskills/agentskills` 到 2026 年 7 月一共 130 个 commit，零个 tag，规范正文被改过 15 次，全部是文档级修订，发布方式就是 merge 进 main 然后自动构建站点。
 
-其中有一次修订值得看。2026-05-16 的 commit `6868401` 把规范正文里的一行从"可以包含 unicode 小写字母数字字符（`a-z`）和连字符"改成"（`a-z`, `0-9`）"——规范正文和它自己上方的摘要表格，在"名字能不能带数字"这件事上不一致了五个月才被人发现。同期，参考校验器 `validator.py` 自 2025-12-18 加进来之后一次都没改过。散文一直在追赶代码，代码才是那份没写出来的规范。
+其中有一次修订值得看。2026-05-16 的 commit `6868401` 把规范正文里的一行从"可以包含 unicode 小写字母数字字符（`a-z`）和连字符"改成"（`a-z`, `0-9`）"，规范正文和它自己上方的摘要表格，在"名字能不能带数字"这件事上不一致了五个月才被人发现。同期，参考校验器 `validator.py` 自 2025-12-18 加进来之后一次都没改过。散文一直在追赶代码，代码才是那份没写出来的规范。
 
 所以给团队定内部格式时，散文照写，但要在开头标注"以校验器为准"，并且把那个校验器做成生产可用的、挂进 CI 的东西，而不是像 `skills-ref` 那样自称仅供演示。
 
 ### 4.2 发现与解析：目录约定就是 manifest
 
-规范只管单个 skill 长什么样，"一个仓库里有哪些 skill"是 CLI 定的。做法是纯目录约定，没有任何索引文件。
+规范只管单个 skill 长什么样。"一个仓库里有哪些 skill"是 CLI 定的，我们看它怎么定。做法是纯目录约定，没有任何索引文件。
 
 搜索顺序在 `src/skills.ts:246-264`：
 
@@ -340,7 +340,7 @@ skill 是从互联网下载的、要喂进 agent 的可执行指令。用一个�
 
 ### 4.3 版本：没有 version 字段怎么控版本
 
-这一节是全章最需要拆开看的一块，因为它有一个漂亮的机制和一个容易被误读的边界。
+这一节我们要拆得细一点，它是全章最需要展开的一块，因为它有一个漂亮的机制和一个容易被误读的边界。
 
 先说问题。npm 靠 registry 上的版本列表判断有没有新版。这里没有 registry，skill 就是别人仓库里的一个目录。要判断"我装的这份和上游现在的一样吗"，能选的路有四条：
 
@@ -353,7 +353,7 @@ skill 是从互联网下载的、要喂进 agent 的可执行指令。用一个�
 
 #### 4.3.1 两级哈希，能免下载就免下载
 
-CLI 后两条路都走，按能不能拿到远端目录树来分派——不是按锁文件类型分，这一点后面会再强调一次，因为很容易看混。
+CLI 后两条路都走，按能不能拿到远端目录树来分派，不是按锁文件类型分，这一点后面会再强调一次，因为很容易看混。
 
 GitHub 来源走 Trees API，一次调用拿到整棵仓库树，从里面挑出目标目录的 tree SHA（`src/blob.ts:225-247`）：
 
@@ -407,15 +407,15 @@ B 的哈希 = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
 
 两个内容完全不同的目录，哈希相同。Go 的 `dirhash` 之所以写成"每个文件先算 sha256，再把 `<hex>  <name>\n` 逐行拼起来整体再哈希一次"，就是专门规避这种拼接歧义。skill 目录里文件名和内容都是外部可控的，这个洞不是纯理论。
 
-**文件模式没进哈希。** skill 规范里有 `scripts/` 目录，里面是要执行的脚本。`chmod +x` 不改变这个哈希。而 git 的 tree 条目格式是 `<mode> <name>\0<sha>`，模式是进哈希的——所以同一个变更，走 GitHub tree SHA 那条路能发现，走本地计算这条路发现不了。
+**文件模式没进哈希。** skill 规范里有 `scripts/` 目录，里面是要执行的脚本。`chmod +x` 不改变这个哈希。而 git 的 tree 条目格式是 `<mode> <name>\0<sha>`，模式是进哈希的，所以同一个变更，走 GitHub tree SHA 那条路能发现，走本地计算这条路发现不了。
 
 **排序用了 `localeCompare`。** `local-lock.ts:122` 和 `blob.ts:427` 都是无参数调用，它依赖 ICU，Node 的 small-icu / full-icu 构建和不同 ICU 版本的排序结果可能不同。一个立意是保证确定性的函数，排序器却是平台相关的。用码点序（直接 `<` 比较）更稳。
 
-这三条不影响日常使用——文件名撞车的概率极低，skill 也很少改权限位。但如果你要照抄这段代码去做自己的内容寻址，把这三处改掉。
+这三条不影响日常使用，文件名撞车的概率极低，skill 也很少改权限位。但如果你要照抄这段代码去做自己的内容寻址，把这三处改掉。
 
 #### 4.3.2 两个锁文件，两种职责，以及哈希保证不了的事
 
-同一件事在两个作用域下需求完全不同，所以用了两个格式不同的锁文件：
+同一件事在两个作用域下需求完全不同，所以我们会看到两个格式不同的锁文件：
 
 | | 项目锁 `skills-lock.json` | 全局锁 `~/.agents/.skill-lock.json` |
 |---|---|---|
@@ -461,7 +461,7 @@ that git can auto-merge cleanly.
 
 现在说这套机制的边界，这是全节最重要的一段。
 
-**这个哈希只用于检测漂移，从不用于校验完整性。** `skills experimental_install` 这个命令看起来像 `npm ci`，实际不是。我在 `src/install.ts` 里搜 `hash`、`verify`、`integrity`，出现次数是零——它做的事就是读锁文件、按 source 分组、挨个调 `runAdd`。锁里记的 `computedHash` 在还原流程里从头到尾没被读过。而且 `ref` 是可选字段（`local-lock.ts:20-21`），没带 ref 装的 skill，还原时拉的是上游此刻的 HEAD。
+**这个哈希只用于检测漂移，从不用于校验完整性。** `skills experimental_install` 这个命令看起来像 `npm ci`，实际不是。我在 `src/install.ts` 里搜 `hash`、`verify`、`integrity`，出现次数是零：它做的事就是读锁文件、按 source 分组、挨个调 `runAdd`。锁里记的 `computedHash` 在还原流程里从头到尾没被读过。而且 `ref` 是可选字段（`local-lock.ts:20-21`），没带 ref 装的 skill，还原时拉的是上游此刻的 HEAD。
 
 `npm ci` 的定义性特征恰恰是严格按 lock 还原、校验 integrity、不一致就报错。这个命令一条都不占，它更接近 `npm install --no-save`。哈希只在 `update.ts:373` 那里被用来回答"上游变了吗"，从来不回答"我装到的是对的吗"。
 
@@ -469,7 +469,7 @@ that git can auto-merge cleanly.
 
 #### 4.3.3 钉版本，以及 Go 已经做完的那道题
 
-内容哈希解决"变没变"，钉版本是另一件事。CLI 支持在来源后面用 `#` 加 ref（`src/source-parser.ts:203-233`）：
+内容哈希解决"变没变"，钉版本是另一件事，我们接着看。CLI 支持在来源后面用 `#` 加 ref（`src/source-parser.ts:203-233`）：
 
 ```bash
 npx skills add 'vercel-labs/skills#v1.5.19'          # 钉 tag
@@ -496,7 +496,7 @@ ref 会被写进锁文件，后续 `update` 带着这个 ref 去比对，所以�
 | `go.sum` | **可变 git 目录的内容**（dirhash `h1:`） | go.mod | 能，靠伪版本 |
 | `skills-lock.json` | 可变 git 目录的内容（`computedHash`） | 无 | **不能** |
 
-前三个哈希的都是不可变制品，能防篡改。后两个哈希的是可变的 git 目录，性质上只能测漂移。这就是为什么把 skills 简单理解成"npm 少了版本号"会出错——保证强度也不一样。
+前三个哈希的都是不可变制品，能防篡改。后两个哈希的是可变的 git 目录，性质上只能测漂移。这就是为什么把 skills 简单理解成"npm 少了版本号"会出错，保证强度也不一样。
 
 真正该拿来对照的是 `go.sum`，因为 Go modules 和 skills 同构：源在 git、没有中央 registry（proxy 可选）、用目录内容哈希。同样的约束下，Go 多做了三件事。
 
@@ -510,7 +510,7 @@ skills 生态今天完全可以用 `git describe` 的输出（`v1.3.0-7-gc042b91
 
 #### 4.3.4 update 的完整链路
 
-`skills update` 项目级和全局都管，两条路径分开实现。图 7-4 是全局那条。
+`skills update` 项目级和全局都管，两条路径分开实现，我们先看全局那条。图 7-4 是全局那条。
 
 ```mermaid
 sequenceDiagram
@@ -560,11 +560,11 @@ export function getSkipReason(entry: SkillLockEntry): string {
 
 这些 skill 会被单独列出来并给出手动更新的命令，没有静默跳过。留意第三行：**`.well-known` 来源永远不检查更新**。4.5.2 会推荐用 well-known 搭内网源，这两件事凑在一起会出问题，到那节再说。
 
-还有一个更隐蔽的洞。GitHub Trees API 在 `recursive=1` 时，条目太多会截断并返回 `truncated: true`。我 grep 了整个 `src/`，没有任何地方处理这个字段。在一个大 monorepo 上，免下载的更新检查会静默地漏掉 skill——不报错，就是永远显示"已是最新"。配合匿名请求 60 次/小时且按 IP 计算的限流（一个出口 NAT 后面的团队很容易撞上），这条免下载快路径的可靠性比看起来低。
+还有一个更隐蔽的洞。GitHub Trees API 在 `recursive=1` 时，条目太多会截断并返回 `truncated: true`。我 grep 了整个 `src/`，没有任何地方处理这个字段。在一个大 monorepo 上，免下载的更新检查会静默地漏掉 skill，不报错，就是永远显示"已是最新"。配合匿名请求 60 次/小时且按 IP 计算的限流（一个出口 NAT 后面的团队很容易撞上），这条免下载快路径的可靠性比看起来低。
 
 #### 4.3.5 自己实现最小版本
 
-一个够用的版本控制器，核心不到 60 行：
+我们写一个够用的版本控制器，核心不到 60 行：
 
 ```typescript
 // 1. 内容哈希：先逐文件算，再按 "hex  name\n" 拼行整体哈希（避免拼接歧义）
@@ -646,7 +646,7 @@ if (!symlinkCreated) {
 
 只装给一个工具时，链接没有意义，代码会自动切成拷贝（`src/add.ts:786-789`）：真身和链接一比一，白白多一层间接。实测装给单个 `claude-code` 时输出是 `✓ vercel-composition-patterns (copied)`，`.agents/` 目录压根不会被创建。
 
-顺带对比一下 pnpm。同样是"一份内容多处引用"，pnpm 用硬链接加内容寻址存储，图的是省磁盘——同一个包在几百个项目里只存一份。这里用符号链接，skill 就几 KB，省磁盘没有意义，图的是单一更新点。目标不同，做法就该不同：内容小、更新频繁、一处内容多处引用适合符号链接；内容大、极少更新则硬链接或直接拷贝更省事。
+顺带对比一下 pnpm。同样是"一份内容多处引用"，pnpm 用硬链接加内容寻址存储，图的是省磁盘，同一个包在几百个项目里只存一份。这里用符号链接，skill 就几 KB，省磁盘没有意义，图的是单一更新点。目标不同，做法就该不同：内容小、更新频繁、一处内容多处引用适合符号链接；内容大、极少更新则硬链接或直接拷贝更省事。
 
 #### 4.4.2 跨平台的三个坑
 
@@ -696,7 +696,7 @@ npm 有 registry.npmjs.org，pip 有 PyPI。Agent Skills 什么都没有，skill
 
 #### 4.5.1 GitHub 快路径、浅克隆与 npm 包
 
-先说快路径，因为它解释了一个你会立刻观察到的现象：装 `vercel-labs/agent-skills` 时终端显示的是 `Fetching skills…` 而不是 `Cloning repository…`。判据在 `src/add.ts:1146-1155`，白名单只对几个已知 owner（`vercel`、`vercel-labs`、`heygen-com`）和个别自托管快照的仓库开放。流程是三步：Trees API 找出所有 `SKILL.md` 的位置，`raw.githubusercontent.com` 拉 frontmatter 拿到名字，`skills.sh/api/download` 拉预构建的文件快照。整个过程不下载 `.git`，装单个 skill 时比克隆一个大仓库快一个数量级。`tryBlobInstall` 任何一步失败都返回 `null`，调用方无缝退回 clone——快路径是纯优化，它挂了只能变慢，不能变不可用。
+先说快路径，因为它解释了一个你会立刻观察到的现象：装 `vercel-labs/agent-skills` 时终端显示的是 `Fetching skills…` 而不是 `Cloning repository…`。判据在 `src/add.ts:1146-1155`，白名单只对几个已知 owner（`vercel`、`vercel-labs`、`heygen-com`）和个别自托管快照的仓库开放。流程是三步：Trees API 找出所有 `SKILL.md` 的位置，`raw.githubusercontent.com` 拉 frontmatter 拿到名字，`skills.sh/api/download` 拉预构建的文件快照。整个过程不下载 `.git`，装单个 skill 时比克隆一个大仓库快一个数量级。`tryBlobInstall` 任何一步失败都返回 `null`，调用方无缝退回 clone，快路径是纯优化，它挂了只能变慢，不能变不可用。
 
 保底通道是 `--depth 1` 浅克隆（`src/git.ts:235-245`）。克隆失败时的处理更有意思：HTTPS 失败会先试 `gh` CLI（很多人的 GitHub 凭证只在 `gh` 里），再试 SSH，三条都失败才报错（`src/git.ts:268-289`），而且报错带上下文：
 
@@ -769,11 +769,11 @@ digest 校验是真的在跑。我往产物文件末尾追加了一行文字、�
 
 校验代码就一行（`src/providers/wellknown.ts:470`），`this.computeDigest(bytes) !== entry.digest` 就返回 `null`。这里要注意报错信息的误导性：它说的是"没找到 skill、检查一下索引文件在不在"，真实原因是校验失败。自建内网源时，把"改内容必须重算 digest"写进发布脚本，别指望报错会提醒你。
 
-索引条目的校验规则很严（`src/providers/wellknown.ts:325-345`），name 必须匹配 `/^[a-z0-9-]+$/` 且 1 到 64 字符，description 不超过 1024，type 只能是 `skill-md` 或 `archive`，digest 必须是 `sha256:` 加 64 位十六进制。任何一条不满足，这个条目就被静默丢掉。留意那个 name 正则是 ASCII only——中文 name 在这条通道上会被直接拒绝，连前面 `unnamed-skill` 的机会都没有。
+索引条目的校验规则很严（`src/providers/wellknown.ts:325-345`），name 必须匹配 `/^[a-z0-9-]+$/` 且 1 到 64 字符，description 不超过 1024，type 只能是 `skill-md` 或 `archive`，digest 必须是 `sha256:` 加 64 位十六进制。任何一条不满足，这个条目就被静默丢掉。留意那个 name 正则是 ASCII only。中文 name 在这条通道上会被直接拒绝，连前面 `unnamed-skill` 的机会都没有。
 
 **现在说这套方案的三个折扣，它们都不在项目文档里。**
 
-第一个是 digest 提供的保证比看起来弱。`index.json` 和产物走的是同一个 HTTP 端点、同一个信任域，能改产物的人一定能改 `index.json` 里的 digest。而且我翻了两个锁文件，都没有 `digest` 字段——digest 没有被钉进客户端，所以也没有 TOFU（首次使用即信任）那层保护。它防的是手滑、缓存不一致和传输截断，防不了服务器被攻破。要让它变成真正的安全控制，需要索引签名加一个独立的信任根，那正是延伸阅读里 TUF 在解决的事。
+第一个是 digest 提供的保证比看起来弱。`index.json` 和产物走的是同一个 HTTP 端点、同一个信任域，能改产物的人一定能改 `index.json` 里的 digest。而且我翻了两个锁文件，都没有 `digest` 字段。digest 没有被钉进客户端，所以也没有 TOFU（首次使用即信任）那层保护。它防的是手滑、缓存不一致和传输截断，防不了服务器被攻破。要让它变成真正的安全控制，需要索引签名加一个独立的信任根，那正是延伸阅读里 TUF 在解决的事。
 
 第二个是企业环境里真正会卡住的三件事，这一节一个字都没提，而它们比 digest 重要得多。**鉴权**：内网源要不要 SSO 或 mTLS？CLI 支不支持自定义 header？如果不支持，"把两个静态文件放到内网地址上"意味着一个任何人可读的匿名端点，很多公司合规直接不批。**企业 TLS 中间人**：Node 不读操作系统信任库，装了 Zscaler 之类的机器上这个 fetch 会直接 `UNABLE_TO_VERIFY_LEAF_SIGNATURE`，得设 `NODE_EXTRA_CA_CERTS`。**代理**：`HTTP_PROXY` / `NO_PROXY` 的行为要自己验。以我的经验，鉴权和证书这两件事本身就够占一周，而搭静态站的脚本不到 100 行。
 
@@ -799,9 +799,9 @@ if (schema !== undefined) return null;
 // ... 按 v0.1.0 解析
 ```
 
-三条规则合起来是一套完整的演进协议。老格式靠字段缺席识别——v0.1.0 发布时没人想到要加版本字段，这是所有 schema 演进的起点现实，v0.2.0 把"没有 `$schema`"本身定义成 v0.1.0，于是老发布者一个字都不用改。新格式靠 URL 标识而不是数字，`https://schemas.agentskills.io/discovery/0.2.0/schema.json` 既是版本号又是能取到 JSON Schema 的地址，还能直接喂给编辑器做补全。未知版本直接拒绝处理，不猜、不降级。
+三条规则合起来是一套完整的演进协议。老格式靠字段缺席识别。v0.1.0 发布时没人想到要加版本字段，这是所有 schema 演进的起点现实，v0.2.0 把"没有 `$schema`"本身定义成 v0.1.0，于是老发布者一个字都不用改。新格式靠 URL 标识而不是数字，`https://schemas.agentskills.io/discovery/0.2.0/schema.json` 既是版本号又是能取到 JSON Schema 的地址，还能直接喂给编辑器做补全。未知版本直接拒绝处理，不猜、不降级。
 
-第三条最反直觉，也最需要限定适用范围。对安装器来说拒绝是对的：装错了有后果，而且不可逆。但对绝大多数数据格式，must-ignore 才是能演进的那条路——protobuf 的 unknown fields、Kubernetes 的字段裁剪都是这么干的。这一章后面还会说"未知字段一律忽略是这个生态投票选出来的做法"，两条建议不矛盾，因为层级不同：**文档级的版本不兼容就拒绝，字段级的未知就忽略**。判据是"猜错的后果是否可逆"。
+第三条最反直觉，也最需要限定适用范围。对安装器来说拒绝是对的：装错了有后果，而且不可逆。但对绝大多数数据格式，must-ignore 才是能演进的那条路。protobuf 的 unknown fields、Kubernetes 的字段裁剪都是这么干的。这一章后面还会说"未知字段一律忽略是这个生态投票选出来的做法"，两条建议不矛盾，因为层级不同：**文档级的版本不兼容就拒绝，字段级的未知就忽略**。判据是"猜错的后果是否可逆"。
 
 把这个判据和前面两个锁文件的做法放在一起，三类文件三种策略：
 
@@ -811,7 +811,7 @@ if (schema !== undefined) return null;
 | 团队基线（项目锁） | 整数 `version` | 直接清空重建，所以要极力避免升版 | 进 git，清空等于丢基线 |
 | 对外发布的格式（well-known 索引） | `$schema` URL | 拒绝处理 | 别人在读，猜错不可逆 |
 
-全局锁读到旧版本就整个清空（`src/skill-lock.ts:88-97`），没有迁移代码，用户下次装 skill 时重新填。项目锁用的是同一套代码，但它的 schema 版本至今还是 1，一次都没升过——进 git 的文件轻易不改 schema，这是刻意维持的。
+全局锁读到旧版本就整个清空（`src/skill-lock.ts:88-97`），没有迁移代码，用户下次装 skill 时重新填。项目锁用的是同一套代码，但它的 schema 版本至今还是 1，一次都没升过，进 git 的文件轻易不改 schema，这是刻意维持的。
 
 ### 4.6 平台适配：一张表驱动 70 多个工具
 
@@ -898,7 +898,7 @@ checkDuplicateDisplayNames();
 
 因为多个工具共用 `.agents/skills` 本来就是设计目标，路径重复是预期内的。留着代码加一行注释说明为什么不启用，下一个人就不会再写一遍。
 
-最后一环是 issue 模板。`.github/ISSUE_TEMPLATE/agent-request.yml` 定义了"请求支持一个新工具"要填的五个字段：Agent Name、Skills Documentation URL、Project Skills Directory、Global Skills Directory、Detection Path。这张表单基本覆盖了 `AgentConfig` 需要的全部信息——Agent Name 拆成 `name` 和 `displayName`，两个目录字段直接对应，Detection Path 变成探测函数的函数体，只有文档链接是给维护者自己查证用的，不进代码。提 issue 的人填完表，维护者照抄成八行代码就完事。
+最后一环是 issue 模板。`.github/ISSUE_TEMPLATE/agent-request.yml` 定义了"请求支持一个新工具"要填的五个字段：Agent Name、Skills Documentation URL、Project Skills Directory、Global Skills Directory、Detection Path。这张表单基本覆盖了 `AgentConfig` 需要的全部信息。Agent Name 拆成 `name` 和 `displayName`，两个目录字段直接对应，Detection Path 变成探测函数的函数体，只有文档链接是给维护者自己查证用的，不进代码。提 issue 的人填完表，维护者照抄成八行代码就完事。
 
 把这套搬到团队里，核心是三个文件：一个 `registry.ts` 当单一事实源（唯一需要人改的文件），一个从 registry 生成文档片段、用注释锚点替换的脚本，一个 PR 校验加合入后回写的 workflow，再配一个字段和 registry 条目一一对应的 issue 表单。加起来不到 200 行，但它把每加一个平台的边际成本从"改四个地方加一次 review"压到了"加一条记录"。
 
@@ -956,23 +956,23 @@ my-skill  ./.agents/skills/my-skill
 
 **撤回机制完全没有。** 一个内部 skill 被发现有害（它可是以 agent 全权限执行任意指令的），怎么让已经装了的 50 个人卸掉？npm 有 deprecate 和 unpublish，Go 有 retract，这里是零。自己补的办法是在内网源的 `index.json` 里加一个 `deprecated` 字段并在发布脚本里检查，但 CLI 不认，只能靠流程。
 
-**skill 本身没有任何签名。** 4.5.3 和第 5 节讲了不少供应链加固，但那全是保护 `skills` 这个 CLI 自己的——GPG 签名签的是 CLI 的发布提交，provenance 证明的是 CLI 包的来源。它分发的 skill 没有签名、没有 provenance、没有作者身份。而 skill 才是那个"以 agent 全权限执行"的东西。这个反差是整个生态目前最大的缺口。
+**skill 本身没有任何签名。** 4.5.3 和第 5 节讲了不少供应链加固，但那全是保护 `skills` 这个 CLI 自己的。GPG 签名签的是 CLI 的发布提交，provenance 证明的是 CLI 包的来源。它分发的 skill 没有签名、没有 provenance、没有作者身份。而 skill 才是那个"以 agent 全权限执行"的东西。这个反差是整个生态目前最大的缺口。
 
 **免下载更新检查会静默漏掉 skill。** GitHub Trees API 在 `recursive=1` 时条目太多会截断并返回 `truncated: true`，而 `src/` 里没有任何地方处理这个字段。大 monorepo 上不会报错，只会永远显示"已是最新"。如果你的 skill 仓库很大，别依赖 `skills update` 的检查结果。
 
 ## 7. 自己搭一套内部 Skill 分发
 
-把这章的东西组装成一个内部方案，按依赖顺序有五步。我原本按天数写过一版，后来删掉了——鉴权和证书那两件事的耗时完全取决于你们公司的流程，写"第 3 天"只会让人低估。
+把这章的东西组装成一个内部方案，按依赖顺序有五步。我原本按天数写过一版，后来删掉了。鉴权和证书那两件事的耗时完全取决于你们公司的流程，写"第 3 天"只会让人低估。
 
 **定规范。** 一份两页的内部约定，硬约束三条：`name` 用 ASCII kebab-case 且等于目录名；`description` 写清做什么和什么时候用（这是 agent 判断要不要激活的唯一依据）；版本信息只能写进 `metadata.version` 且仅供人读。把 `skills-ref validate` 挂进 skill 仓库的 CI，并在约定里标注"以校验器为准"。
 
-**建仓库。** 一个 `corp/agent-skills` 仓库，布局用 `skills/<name>/SKILL.md`，每次发布打 tag。团队成员安装时带上 ref，而且用 commit SHA 而不是 tag——tag 可以被移动，SHA 不能。
+**建仓库。** 一个 `corp/agent-skills` 仓库，布局用 `skills/<name>/SKILL.md`，每次发布打 tag。团队成员安装时带上 ref，而且用 commit SHA 而不是 tag，tag 可以被移动，SHA 不能。
 
 **搭内网源（如果不能上 GitHub）。** 一个静态站，两类文件：`/.well-known/agent-skills/index.json` 和各个产物。发布脚本干三件事：打包产物、算 sha256、重写 index.json。脚本不到 100 行，但先去把鉴权、企业 CA、代理这三件事验通，它们才是真正的工期。
 
 **接 CI。** 业务仓库的 CI 里加一步还原，注意 6.1 的第一个坑，视情况用完整的 `skills add` 而不是 `experimental_install`。`skills-lock.json` 进 git 并要求 review。CI 里的 `npx skills` 记得钉版本。
 
-**做治理。** 更新提醒不要指望 `skills update`——它不检查 well-known 来源。改成在发布脚本里把 `index.json` 的变更推到群里，由人决定要不要升。别做成自动升级：skill 直接改变 agent 行为，自动升级会让全组 agent 的行为在无人察觉时集体变化。
+**做治理。** 更新提醒不要指望 `skills update`：它不检查 well-known 来源。改成在发布脚本里把 `index.json` 的变更推到群里，由人决定要不要升。别做成自动升级：skill 直接改变 agent 行为，自动升级会让全组 agent 的行为在无人察觉时集体变化。
 
 整套下来，你自己写的代码只有那个发布脚本和那个推送变更的 job。
 

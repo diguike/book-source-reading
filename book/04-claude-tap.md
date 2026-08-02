@@ -9,14 +9,14 @@ learning_objectives:
   - 能写一个 SSE 流式响应的边走边录重组器，把 chunk 化的 Anthropic / OpenAI 流式协议累积成可持久化的完整快照
   - 能用一个 dataclass 驱动的策略表模式抽象 N 个外部 client 的适配差异，把 if/else 分支整理成可读、可扩展的配置
 feishu_url: "https://fivwvysqdz.feishu.cn/wiki/IviBwEZx1iGC7ykonSScjHupnJw"
-last_synced: "2026-06-09"
+last_synced: "2026-08-02"
 ---
 
 ## 1. claude-tap
 
 [claude-tap](https://github.com/liaohch3/claude-tap) 是 AI coding agent 的本地 trace viewer。
 
-正常用 Claude Code / Codex / Gemini CLI 干活，它在背后录下这些 CLI 跟上游 LLM 之间的真实 HTTP 流量 —— 完整的 system prompt、对话历史、工具 schema、工具调用、流式响应、token 用量，全部存在本地。结束后生成一个单文件 HTML viewer 翻看历史，相邻请求之间还有结构化 diff。
+正常用 Claude Code / Codex / Gemini CLI 干活，它在背后录下这些 CLI 跟上游 LLM 之间的真实 HTTP 流量：完整的 system prompt、对话历史、工具 schema、工具调用、流式响应、token 用量，全部存在本地。结束后生成一个单文件 HTML viewer 翻看历史，相邻请求之间还有结构化 diff。
 
 ### 1.1 痛点：看不到 agent 发出去的请求
 
@@ -33,11 +33,11 @@ last_synced: "2026-06-09"
 - Antigravity 是 Google 的产物，macOS 上不读 `SSL_CERT_FILE`，必须装进 login keychain
 - Hermes 是 Python 写的，`gateway start` 会 delegate 到 systemd，代理环境变量全部丢掉
 
-每个坑都要踩过才知道。claude-tap 把这些差异全部收口在一个 CLI 命令背后：`claude-tap` 一行启动，对使用者来说和直接跑 `claude` 没区别。
+每个坑都要我们自己踩过才知道。claude-tap 把这些差异全部收口在一个 CLI 命令背后：`claude-tap` 一行启动，对使用者来说和直接跑 `claude` 没区别。
 
 ### 1.2 三个可迁移工程模式
 
-1. **反向代理 vs 正向代理 + 自签 CA 的二选一**。任何想拦截一个不是自己写的 child 进程的 HTTPS 流量都要做这道选择题 —— 浏览器抓包、API gateway 调试器、移动端 mitm 工具都用得上。
+1. **反向代理 vs 正向代理 + 自签 CA 的二选一**。任何想拦截一个不是自己写的 child 进程的 HTTPS 流量都要做这道选择题，浏览器抓包、API gateway 调试器、移动端 mitm 工具都用得上。
 
 2. **SSE 流式响应的边走边录**。在不破坏 streaming 体验的前提下，把流式 chunk 累积成可持久化的完整快照。任何代理类工具录流量都会撞到这件事。
 
@@ -97,7 +97,7 @@ claude-tap
 ✓ Viewer:      ./.traces/2026-06-09/trace_103412.html
 ```
 
-直接用浏览器打开那个 HTML 就能看到完整的请求历史 —— 每个 turn 的 system prompt、messages、tool definitions、tool calls、流式重组后的响应、token usage，以及相邻两个 turn 之间的 diff（哪句话变了、哪个工具被换了）。从 v0.1.75 开始 live viewer 默认开启，进程跑着的时候浏览器里就能实时刷新看到当前请求。
+直接用浏览器打开那个 HTML 就能看到完整的请求历史：每个 turn 的 system prompt、messages、tool definitions、tool calls、流式重组后的响应、token usage，以及相邻两个 turn 之间的 diff（哪句话变了、哪个工具被换了）。从 v0.1.75 开始 live viewer 默认开启，进程跑着的时候浏览器里就能实时刷新看到当前请求。
 
 换一个 client，加 `--tap-client`：
 
@@ -113,7 +113,7 @@ claude-tap --tap-client gemini -- -p "hello"
 
 `--` 之后的参数会原样透传给被包装的 client。所有 `--tap-*` 前缀的 flag 是 claude-tap 自己消费的，其余全部透传。
 
-不想 spawn 任何 client，只把代理跑起来留给自己接：
+如果我们不想 spawn 任何 client，只把代理跑起来留给自己接：
 
 ```bash
 claude-tap --tap-no-launch --tap-port 8080
@@ -121,7 +121,7 @@ claude-tap --tap-no-launch --tap-port 8080
 ANTHROPIC_BASE_URL=http://127.0.0.1:8080 claude
 ```
 
-要看历史的 trace 不启动新流量：
+如果我们只想翻历史 trace、不启动新流量：
 
 ```bash
 claude-tap dashboard
@@ -131,7 +131,7 @@ claude-tap dashboard
 
 ## 3. 全景架构
 
-一次被抓的请求会穿过这些组件：
+我们先把一次被抓的请求从头走一遍，看它会穿过哪些组件：
 
 ```mermaid
 graph TB
@@ -154,7 +154,7 @@ graph TB
     M --> O[HTML viewer 生成<br/>viewer.py + 5K JS]
 ```
 
-代码量分布也呼应这张图：
+代码量的分布也呼应这张图，我们从行数就能看出重心压在哪几块：
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
@@ -173,7 +173,7 @@ graph TB
 | `certs.py` | 277 | 本地 CA + 自签证书 |
 | `bedrock.py` | 68 | AWS Bedrock EventStream 解码 |
 
-核心抽象不多，5 个就贯穿全项目：
+核心抽象不多，我们要盯住的只有 5 个，它们贯穿全项目：
 
 | 抽象 | 位置 | 一句话定位 |
 |---|---|---|
@@ -183,9 +183,9 @@ graph TB
 | `TraceWriter` | `trace.py:15-90` | 写一条 trace 同时累加 token / model / error 统计，可选广播给 live viewer |
 | `TraceStore` | `trace_store.py:69+` | SQLite 持久化层，schema 版本化、支持 blob dedup |
 
-`ClientConfig` 是策略层，决定怎么把 child 进程的流量拐进来。`CertificateAuthority` 是 TLS 层，用来解开 child 发出的 HTTPS。`SSEReassembler` 是协议层，把流式 chunks 还原成可读的完整对话。`TraceWriter` / `TraceStore` 是数据层。
+`ClientConfig` 是策略层，决定我们怎么把 child 进程的流量拐进来。`CertificateAuthority` 是 TLS 层，用来解开 child 发出的 HTTPS。`SSEReassembler` 是协议层，把流式 chunks 还原成可读的完整对话。`TraceWriter` / `TraceStore` 是数据层。
 
-这五个抽象里，`ClientConfig`、`CertificateAuthority`、`SSEReassembler` 是教学价值最高的三个 —— 后面三节按这个顺序逐个拆开。
+这五个抽象里，`ClientConfig`、`CertificateAuthority`、`SSEReassembler` 是教学价值最高的三个，后面三节按这个顺序逐个拆开。
 
 ## 4. 核心模块
 
@@ -193,14 +193,14 @@ graph TB
 
 #### 4.1.1 选择题的本质
 
-拦截一个 child 进程发出的 HTTPS 请求 —— child 不是自己写的（Claude Code 闭源、Codex 是 Rust binary、Antigravity 是 Google 的产物），但能控制它的启动环境（环境变量、配置文件、命令行参数）。这件事在 mitmproxy、Charles Proxy、Burp Suite 这些工具里有几十年历史，但今天写代理还是一道选择题：
+我们要拦的是一个 child 进程发出的 HTTPS 请求。child 不是自己写的（Claude Code 闭源、Codex 是 Rust binary、Antigravity 是 Google 的产物），但我们能控制它的启动环境（环境变量、配置文件、命令行参数）。这件事在 mitmproxy、Charles Proxy、Burp Suite 这些工具里有几十年历史，但今天写代理还是一道选择题：
 
 - **选项 A：反向代理（Reverse Proxy）**。启动一个 HTTP 服务监听本地端口，让 child 把请求地址从真实上游改成本地代理。child 发明文 HTTP 到代理，代理转发到真上游。
 - **选项 B：正向代理 + MITM（Forward Proxy + Man-in-the-Middle TLS）**。启动一个 HTTP CONNECT 代理，让 child 把所有 HTTPS 流量都走代理。child 用 TLS 跟代理握手，代理拿一张假装是上游的证书应答，握手成功后 child 把明文 HTTP 写进 TLS 隧道，代理解开来录、转发，再用同样的 TLS 包装把上游响应送回去。
 
 选择题的本质：**能不能让 child 听话地改 base URL**。能就用 A，不能就用 B。
 
-#### 4.1.2 两种主流路径对比
+#### 4.1.2 反向代理派与正向代理派
 
 **反向代理派**。mitmproxy 的 `reverse` 模式、Charles 的 "Map Remote"、`socat` 的 TCP 转发都是这个思路。优点是**简单到只需要会写 HTTP server**。最小教学版本不超过 15 行：
 
@@ -217,26 +217,26 @@ async def handler(request):
         return web.Response(status=resp.status, body=await resp.read())
 ```
 
-代价是**只能拦能改 base URL 的 client**。Claude Code（`ANTHROPIC_BASE_URL`）、Codex（`OPENAI_BASE_URL`）、Kimi（`KIMI_BASE_URL`）都能改，反向代理足够。但 Cursor 把 base URL 编译进 Rust binary、Antigravity 跨多个 Google 域名、Qoder 在 `~/.qoder/conf.json` 写死 endpoint —— 这些都拦不到。
+代价是**只能拦能改 base URL 的 client**。Claude Code（`ANTHROPIC_BASE_URL`）、Codex（`OPENAI_BASE_URL`）、Kimi（`KIMI_BASE_URL`）都能改，反向代理足够。但 Cursor 把 base URL 编译进 Rust binary、Antigravity 跨多个 Google 域名、Qoder 在 `~/.qoder/conf.json` 写死 endpoint，这些都拦不到。
 
 **正向代理派**。mitmproxy 的 `regular` 模式、Burp Suite、Charles 的标准用法。要解决三个子问题：
 
 1. 让 child 把流量送过来：通过 `HTTPS_PROXY` 环境变量（Python `httpx`、`requests`、Node.js `undici`、Go `net/http`、Rust `reqwest` 都默认认它）。
-2. 让 child 信任你的 CA：每家有不同的环境变量 —— Node.js 是 `NODE_EXTRA_CA_CERTS`，Python 的 httpx 看 `SSL_CERT_FILE`，Python 的 requests 看 `REQUESTS_CA_BUNDLE`，Codex Rust binary 看 `CODEX_CA_CERTIFICATE`。
+2. 让 child 信任你的 CA：每家有不同的环境变量：Node.js 是 `NODE_EXTRA_CA_CERTS`，Python 的 httpx 看 `SSL_CERT_FILE`，Python 的 requests 看 `REQUESTS_CA_BUNDLE`，Codex Rust binary 看 `CODEX_CA_CERTIFICATE`。
 3. MITM TLS termination：CONNECT 请求来了之后，本地起一个 TLS server 用一张以目标 hostname 为 CN 的自签证书应答，把 child 的 TLS 解开。
 
 正向代理的优点是**只要 child 听 `HTTPS_PROXY`（绝大多数现代 HTTP 客户端都听），就能拦它所有 HTTPS 流量**，不需要 base URL。代价是要实现 CA、要解决"怎么让 child 信任 CA"在不同操作系统上的差异（macOS 还要进 keychain 才能让某些 binary 接受），要实现 CONNECT + 本地 TLS termination。
 
-mitmproxy 是这条路线的开源标杆，5 万行 Python，把整个流程做到了产品级。claude-tap 不是 mitmproxy 的轮子重造 —— 它做的事情更具体：**为每个 LLM CLI agent 做最少配置的 MITM**，并且**和反向代理同时存在**，按 client 选用最合适的一种。
+mitmproxy 是这条路线的开源标杆，5 万行 Python，把整个流程做到了产品级。claude-tap 不是 mitmproxy 的轮子重造，它做的事情更具体：**为每个 LLM CLI agent 做最少配置的 MITM**，并且**和反向代理同时存在**，按 client 选用最合适的一种。
 
 #### 4.1.3 claude-tap 的二选一矩阵
 
-claude-tap 把两种都实现了，由 `ClientConfig.default_proxy_mode` 字段决定每个 client 用哪种。判别公式很简单：
+claude-tap 把两种都实现了，由 `ClientConfig.default_proxy_mode` 字段决定每个 client 用哪种。我们可以把它的判别公式压成两行：
 
 > **单 provider 且能改 base URL → 反向**
 > **多 provider 或不能改 base URL → 正向**
 
-12 个 client 在 `cli_clients.py:138-276` 的分布完美符合这条公式 —— Claude Code / Codex / Kimi / CodeBuddy 是单 provider，全部默认反向；Gemini / OpenCode / Pi / Hermes / Cursor / Qoder / Antigravity 是多 provider 或无 base URL，全部默认正向。
+12 个 client 在 `cli_clients.py:138-276` 的分布完美符合这条公式：Claude Code / Codex / Kimi / CodeBuddy 是单 provider，全部默认反向；Gemini / OpenCode / Pi / Hermes / Cursor / Qoder / Antigravity 是多 provider 或无 base URL，全部默认正向。
 
 **反向代理的实现**：claude-tap 的 `proxy.py:465` 就是上面 15 行教学版的加强版，多做四件事：
 
@@ -254,15 +254,15 @@ claude-tap 把两种都实现了，由 `ClientConfig.default_proxy_mode` 字段�
 5. 握手成功后，客户端在 TLS 隧道里发明文 HTTP 请求
 6. 代理读明文、转发到真上游、把上游响应套回 TLS 隧道送回
 
-第 4 步是关键。客户端肯接受这张冒牌证书的前提是它信任了代理的 CA —— 这是为什么正向代理必须配合 CA 信任的环境变量注入（4.1.4 讲）。
+第 4 步是关键。客户端肯接受这张冒牌证书的前提是它信任了代理的 CA，这也是为什么正向代理必须配合 CA 信任的环境变量注入（4.1.4 讲）。
 
-代码上还有一个工程坑值得提：**Python `loop.start_tls()` 在 macOS Python 3.11 上不稳**。作者用了一个 loopback bounce trick（`forward_proxy.py:336-403`）—— 起一个临时 TLS server 在 `127.0.0.1:随机端口`，再用 TCP relay 把客户端 socket 和这个 TLS server 接上。客户端以为自己在跟原 socket 通信、其实在跟 localhost TLS server 通信。代价是多两次 socket copy，收益是绕开 `start_tls()` bug。**自己写的话，如果只跑 Linux 或 Python 3.12+，直接 `loop.start_tls()` 就行**，不要照搬这个 dance。
+代码上还有一个工程坑值得提：**Python `loop.start_tls()` 在 macOS Python 3.11 上不稳**。作者用了一个 loopback bounce trick（`forward_proxy.py:336-403`）：起一个临时 TLS server 在 `127.0.0.1:随机端口`，再用 TCP relay 把客户端 socket 和这个 TLS server 接上。客户端以为自己在跟原 socket 通信、其实在跟 localhost TLS server 通信。代价是多两次 socket copy，收益是绕开 `start_tls()` bug。**自己写的话，如果只跑 Linux 或 Python 3.12+，直接 `loop.start_tls()` 就行**，不要照搬这个 dance。
 
 #### 4.1.4 CA 证书生成与 SAN 签发
 
 正向代理能跑起来的前提是**有一张能让 child 信任的证书**。`certs.py` 不到 280 行，把 CA 生命周期管理完整地实现了。整个模块只有两个核心函数：
 
-**1. `ensure_ca()` —— 首次启动签一张自签 CA，存到 `~/.claude-tap/ca.pem`**。关键点不是代码长度，是几个工程决定：
+**1. `ensure_ca()`：首次启动签一张自签 CA，存到 `~/.claude-tap/ca.pem`**。关键点不是代码长度，是几个工程决定：
 
 - **CA 寿命 5 年**：够长，省得用户隔几个月被迫重新信任
 - **`BasicConstraints(ca=True, path_length=0)`**：`ca=True` 让这张证书可以签发其他证书；`path_length=0` 限制"它签出来的证书不能再签别人"，防止 CA 失窃后无限链式签发
@@ -291,7 +291,7 @@ def make_ca():
     return cert, key
 ```
 
-**2. `get_host_cert_pem(hostname)` —— 每个新域名第一次握手时签一张 per-host 证书**。这里有一个新手必踩的坑：
+**2. `get_host_cert_pem(hostname)`：每个新域名第一次握手时签一张 per-host 证书**。这里有一个新手必踩的坑：
 
 > **现代 TLS 客户端只看 SAN（Subject Alternative Name），不看 CN（Common Name）**。
 >
@@ -314,23 +314,31 @@ except ValueError:
 # 然后在 cert builder 里 .add_extension(x509.SubjectAlternativeName(san_names), critical=False)
 ```
 
-加上 per-host 证书的进程内缓存（`_host_cache: dict[str, tuple[bytes, bytes]]`，避免每次握手都重签 —— 一次 RSA-2048 keygen 在 macOS 上 100ms+），就构成了一个够用的 MITM CA。剩下的边界 case（IP6、wildcard 证书、SNI 匹配多 hostname）claude-tap 在 v0.1.104 没全部覆盖，按需扩展。
+加上 per-host 证书的进程内缓存（`_host_cache: dict[str, tuple[bytes, bytes]]`，避免每次握手都重签，一次 RSA-2048 keygen 在 macOS 上 100ms+），就构成了一个够用的 MITM CA。剩下的边界 case（IP6、wildcard 证书、SNI 匹配多 hostname）claude-tap 在 v0.1.104 没全部覆盖，按需扩展。
 
-#### 4.1.5 三条取舍
+#### 4.1.5 CA 装在哪、TLS 怎么兜底、端口怎么防扫
 
-**取舍一：把 CA 信任留给 child 进程作用域，不替它装系统证书。** 这是个安全决定。把 CA 装进系统证书库（macOS keychain root、Linux `/usr/local/share/ca-certificates/`）一次性解决所有问题，但一旦那个 `ca-key.pem` 失窃，攻击者能伪造整个互联网。claude-tap 默认只通过环境变量把 CA 喂给 child：`NODE_EXTRA_CA_CERTS`、`SSL_CERT_FILE`、`REQUESTS_CA_BUNDLE`、`CODEX_CA_CERTIFICATE`。信任范围只在被包装的 child 进程内有效，浏览器和系统其他工具一律不信。
+三个决定，先看结论：
 
-mitmproxy 走的是相反方向 —— `mitmproxy --install-cert` 直接装进系统库。优点是用户体验更顺，缺点是攻击面更大。两个选择都对，看你的目标用户群：mitmproxy 是给安全研究员用的、用户接受这种风险；claude-tap 是给普通工程师调 prompt 用的、必须默认不动系统。
+| 决定 | claude-tap 的做法 | 代价 / 边界 |
+|---|---|---|
+| CA 信任范围 | 只通过环境变量喂给 child：`NODE_EXTRA_CA_CERTS`、`SSL_CERT_FILE`、`REQUESTS_CA_BUNDLE`、`CODEX_CA_CERTIFICATE`，不装系统证书库 | 信任只在被包装的 child 进程内有效，浏览器和系统其他工具一律不信 |
+| CONNECT 隧道 | loopback bounce，不用 `loop.start_tls()`（4.1.3 展开过） | 跨平台稳，但多两次 socket copy；只跑 Linux 或 Python 3.12+ 可以直接用 `loop.start_tls()` 省掉这个 dance |
+| 端口防护 | `proxy.py:89-119` 的 `ALLOWED_PATH_PREFIXES` 白名单，只放 `/v1/messages`、`/v1/chat/completions`、`/v1internal` 这些，其余一律 404 | 只给反向代理用 |
 
-**例外**：Antigravity CLI（`agy`）在 macOS 上不读 `SSL_CERT_FILE` 这种 per-process 环境变量，必须装进 login keychain 才认。claude-tap 在 `cli_clients.py` 给这个 client 加了 `auto_trust_ca_macos=True`，启动时跑 `security add-trusted-cert -k ~/Library/Keychains/login.keychain-db`，注意目标是 login keychain 而不是 System keychain：前者不需要 sudo、只影响当前用户、可以单点撤销；后者需要 root 权限、影响整机。一行 boolean 配置背后是对 macOS keychain 模型的精确理解。
+第一条是安全决定。把 CA 装进系统证书库（macOS keychain root、Linux `/usr/local/share/ca-certificates/`）能一次性解决所有问题，但一旦那个 `ca-key.pem` 失窃，攻击者能伪造整个互联网。
 
-**取舍二：CONNECT 隧道用 loopback bounce 而不是 `start_tls()`。** 上面 4.1.3 节展开过。这是给 macOS Python 3.11 兜底的写法，跨平台稳定但代价是多两次 socket copy。如果只跑 Linux 或者 Python 3.12+，可以直接用 `loop.start_tls()` 省掉这个 dance。
+mitmproxy 走的是相反方向，`mitmproxy --install-cert` 直接装进系统库。优点是用户体验更顺，缺点是攻击面更大。两个选择都对，看你的目标用户群：mitmproxy 是给安全研究员用的、用户接受这种风险；claude-tap 是给普通工程师调 prompt 用的、必须默认不动系统。
 
-**取舍三：路径白名单。** `proxy.py:89-119` 维护了一个 `ALLOWED_PATH_PREFIXES` 元组，只放 LLM API 相关路径（`/v1/messages`、`/v1/chat/completions`、`/v1internal`...）。其他路径一律 404。这是给反向代理用的，防止扫描器（`/etc/passwd`、`/swagger`、`/.git/config`）打到这个本地端口 —— 反向代理本质上是一个对外的 HTTP server，即便绑 127.0.0.1 也可能被同机器其他进程探测。路径白名单是简单有效的护栏。任何专用 API 代理都可以照搬这条 pattern。
+**例外**：Antigravity CLI（`agy`）在 macOS 上不读 `SSL_CERT_FILE` 这种 per-process 环境变量，必须装进 login keychain 才认。
 
-#### 4.1.6 自己实现最小双模式代理
+claude-tap 在 `cli_clients.py` 给这个 client 加了 `auto_trust_ca_macos=True`，启动时跑 `security add-trusted-cert -k ~/Library/Keychains/login.keychain-db`。注意目标是 login keychain 而不是 System keychain：前者不需要 sudo、只影响当前用户、可以单点撤销，后者需要 root 权限、影响整机。一行 boolean 配置背后是对 macOS keychain 模型的精确理解。
 
-最小可用的反向代理 + 正向代理双模式工具，< 200 行 Python 能跑通：
+第三条挡的是 `/etc/passwd`、`/swagger`、`/.git/config` 这类扫描。反向代理本质上是一个对外的 HTTP server，即便绑 127.0.0.1 也可能被同机器其他进程探测。路径白名单是简单有效的护栏，任何专用 API 代理都可以照搬这条 pattern。
+
+#### 4.1.6 200 行的双模式代理骨架
+
+我们把这两种模式压到最小，< 200 行 Python 就能跑通一个双模式代理：
 
 ```python
 # mini_tap.py — minimal HTTP/HTTPS proxy with reverse + forward modes
@@ -411,23 +419,23 @@ if __name__ == "__main__":
 
 1. **反向模式直接复用 aiohttp 的 `web.Application` + `*.{path:.*}` catch-all 路由**。任何 HTTP server 框架都可以，没必要自己手写 socket。
 2. **正向模式用裸 `asyncio.start_server`** 而不是 HTTP 框架，因为 CONNECT 是 HTTP 协议里的特殊请求，要在 socket 层做 hijack。
-3. **CA 一旦生成就要持久化**到 `~/.config/your-tool/` 之类的地方，不要每次随机生成 —— 用户每次都要重新信任会疯。
+3. **CA 一旦生成就要持久化**到 `~/.config/your-tool/` 之类的地方，不要每次随机生成，用户每次都要重新信任会疯。
 4. **per-host 证书做进程内缓存**就够了，CA 寿命 5 年、per-host 证书寿命 1 年是合理选择。
 
-不要试图复刻 claude-tap 的 loopback bounce trick —— 如果只跑 Linux 或者新版 Python，`loop.start_tls()` 现在已经够稳。用 trick 是为了兼容老 macOS Python，自己项目里不一定需要。
+不要试图复刻 claude-tap 的 loopback bounce trick。如果只跑 Linux 或者新版 Python，`loop.start_tls()` 现在已经够稳。用 trick 是为了兼容老 macOS Python，自己项目里不一定需要。
 
 ### 4.2 SSE 流式响应：把 chunk 累成可持久化的完整快照
 
 #### 4.2.1 streaming 不能 await 整个响应
 
-LLM 流量百分之八九十是 streaming 的。代理 streaming 响应要同时满足两个互相冲突的需求：
+LLM 流量百分之八九十是 streaming 的。我们代理 streaming 响应时，要同时满足两个互相冲突的需求：
 
-1. **零延迟转发**：client 期望 chunk 到达就立刻写到自己的输出。如果 `await resp.read()` 把整个响应收完再转发，client 端的 streaming 就死了 —— `claude` 命令行会卡几秒、然后一次性吐出全部文本。
-2. **完整快照写入存储**：又需要把整个响应累积成一份可读的结构化数据。流式响应的每个 chunk 是一段 SSE 协议帧（`event: content_block_delta\ndata: {...}\n\n`），单独看一个 chunk 没意义 —— `delta = "hello"` 必须放进上下文（第几个 content block、之前累积到哪了）才看得懂。
+1. **零延迟转发**：client 期望 chunk 到达就立刻写到自己的输出。如果 `await resp.read()` 把整个响应收完再转发，client 端的 streaming 就死了，`claude` 命令行会卡几秒、然后一次性吐出全部文本。
+2. **完整快照写入存储**：又需要把整个响应累积成一份可读的结构化数据。流式响应的每个 chunk 是一段 SSE 协议帧（`event: content_block_delta\ndata: {...}\n\n`），单独看一个 chunk 没意义，`delta = "hello"` 必须放进上下文（第几个 content block、之前累积到哪了）才看得懂。
 
 第二条最难。要把一组 SSE 事件还原成 Anthropic SDK 调 `client.messages.create(...)` 拿到的那种完整 `Message` 对象，里面有 `id`、`role`、`content: [{type: text, text: 完整文本}]`、`usage`。
 
-#### 4.2.2 三种重组路线
+#### 4.2.2 跑完再处理、套 SDK、还是手写累积器
 
 **方案 A：跑完再处理**。最简单：把所有 SSE chunks buffer 到内存，等流结束统一解析。代价是 streaming UX 完全坏掉，client 看到的是几秒卡顿后一次性吐出全部文本。否决。
 
@@ -460,7 +468,7 @@ def feed_bytes(self, chunk: bytes):
         self._feed_line(line.decode("utf-8", errors="replace"))
 ```
 
-这是流式协议解析的标准 pattern：**一个 bytes buffer，每来一段就尝试切出完整的一行处理，剩下半行留着等下一个 chunk**。`split(b"\n", 1)` 限定只切第一个换行，把后续内容留在 buffer 里。这一行很关键 —— 用 `splitlines()` 全切的话，半行会被吃掉。
+这是流式协议解析的标准 pattern：**一个 bytes buffer，每来一段就尝试切出完整的一行处理，剩下半行留着等下一个 chunk**。`split(b"\n", 1)` 限定只切第一个换行，把后续内容留在 buffer 里。这一行很关键，用 `splitlines()` 全切的话，半行会被吃掉。
 
 `_feed_line` 是 SSE 协议状态机（`sse.py:29-60`）：
 
@@ -553,9 +561,9 @@ content_block_delta  → partial_json: "ls\"}"
 content_block_stop   → _partial_json 拼好 "{\"command\": \"ls\"}"，可以 json.loads
 ```
 
-中间任何一个 chunk 单独看都不是合法 JSON，必须**等流结束再 parse**。这条 pattern 在任何"流式累积 JSON"场景都通用 —— OpenAI 的 function calling `arguments` 流式累积也是同样思路。
+中间任何一个 chunk 单独看都不是合法 JSON，必须**等流结束再 parse**。这条 pattern 在任何"流式累积 JSON"场景都通用，OpenAI 的 function calling `arguments` 流式累积也是同样思路。
 
-**OpenAI 分支额外做了一件事：镜像到 Anthropic shape**。`self._snapshot["content"]` 同时挂一份 Anthropic 风格的 `[{type: "text", text: ...}, {type: "tool_use", id, name, input}]`。这样 viewer 的渲染逻辑**只要认 Anthropic 一套 shape**，OpenAI / Anthropic 都能渲染。这是把"协议适配"做在数据层而不是渲染层的典型 —— 在数据进入存储**之前**统一形态，下游所有消费者（viewer / dashboard / diff 工具）不用关心原始协议。代价是写入路径多一次转换；收益是消费路径越多、回报越大。
+**OpenAI 分支额外做了一件事：镜像到 Anthropic shape**。`self._snapshot["content"]` 同时挂一份 Anthropic 风格的 `[{type: "text", text: ...}, {type: "tool_use", id, name, input}]`。这样 viewer 的渲染逻辑**只要认 Anthropic 一套 shape**，OpenAI / Anthropic 都能渲染。这是把"协议适配"做在数据层而不是渲染层的典型：在数据进入存储**之前**统一形态，下游所有消费者（viewer / dashboard / diff 工具）不用关心原始协议。代价是写入路径多一次转换；收益是消费路径越多、回报越大。
 
 #### 4.2.4 转发与累积的串行编排
 
@@ -598,19 +606,23 @@ async def _handle_streaming(request, upstream_resp, ...):
 
 先 `write` 再 `feed` 的顺序很关键。颠倒过来先 feed 后 write，feed 里万一抛异常就把整条流式响应堵死了。先转发、再处理，是流式代理的稳定姿势。
 
-异常处理也值得一看：`ConnectionError` 和 `asyncio.CancelledError` 单独捕获。前者是 client 主动断开（用户 `Ctrl-C` 了），后者是 aiohttp 自己 cancel task（请求超时、shutdown）。两种都不要 raise，应该静默把已经累积的部分写进 trace。这条 pattern 在任何代理代码里都通用 —— **client 断开不等于错误**。
+异常处理也值得一看：`ConnectionError` 和 `asyncio.CancelledError` 单独捕获。前者是 client 主动断开（用户 `Ctrl-C` 了），后者是 aiohttp 自己 cancel task（请求超时、shutdown）。两种都不要 raise，应该静默把已经累积的部分写进 trace。这条 pattern 在任何代理代码里都通用：**client 断开不等于错误**。
 
-#### 4.2.5 三条取舍
+#### 4.2.5 为什么不用 SDK、为什么默认不存 event、为什么吞异常
 
-**取舍一：手写累加器而不是 fork SDK 的 streaming helper**。上面 4.2.2 已经讲过。代价是要跟着上游协议变化更新代码（Anthropic 新增 thinking block 时这里要加一支）。收益是零依赖、跨协议、好测试。对一个会被很多人 fork 改的工具来说，这条取舍是正确的 —— 依赖越少，fork 越容易跑起来。
+| 决定 | 理由 | 代价 |
+|---|---|---|
+| 手写累加器，不 fork SDK 的 streaming helper | 零依赖、跨协议、好测试。对一个会被很多人 fork 改的工具，依赖越少 fork 越容易跑起来 | 要跟着上游协议变化更新代码，Anthropic 新增 thinking block 时这里要加一支 |
+| `SSEReassembler.__init__(store_events: bool)` 默认关，只存最终的 reconstructed snapshot | 一次 Claude Code 对话动辄几千个 SSE event（每个 token 一个 delta），全存会让 trace 文件膨胀十几倍，查询也慢 | 原始 event 数组只在调试代理本身、验证 reconstruction 正确性时有用，要看得开 `--tap-store-stream-events` |
+| `_accumulate` 整个 try 套着 `except Exception: pass` | 上游协议演化时偶尔会冒出一种新的 event 类型，老的 claude-tap 不认。宁可这个 chunk 不计入快照、其他 chunk 继续累积，也不要整个流挂掉 | 看起来不够严谨 |
 
-**取舍二：`store_events` 默认关闭**。`SSEReassembler.__init__(store_events: bool)` 决定要不要把每个原始 SSE event 存下来。默认关，只存最终的 reconstructed snapshot。原因写在 README：原始 event 数组对绝大多数读 trace 的用户没用，只在调试代理本身、或者验证 reconstruction 正确性时有用。打开 `--tap-store-stream-events` 才会全存。这是个对的默认值 —— 一次 Claude Code 对话动辄几千个 SSE event（每个 token 一个 delta），全存会让 trace 文件膨胀十几倍，查询也慢。
+第一条上面 4.2.2 已经讲过，第二条的原因写在 README。
 
-**取舍三：失败静默**。`_accumulate` 整个 try 套着 `except Exception: pass`。看起来不够严谨，但其实是必要的 —— 上游协议演化时偶尔会冒出来一种新的 event 类型，老的 claude-tap 不认。这种情况下：宁可这个 chunk 不计入快照、其他 chunk 继续累积，也不要整个流挂掉。**代理工具的容错原则是"宁可丢部分，不要全死"** —— 用户的优先级永远是"让 claude 正常用"，trace 残缺是次要问题。
+第三条是代理类工具的通用取向：**宁可丢部分，不要全死**。用户的优先级永远是"让 claude 正常用"，trace 残缺是次要问题。
 
-#### 4.2.6 自己实现最小 SSE 重组器
+#### 4.2.6 80 行的 SSE 累积器
 
-只需要代理 + 录 SSE 的话，最小重组器骨架：
+如果我们只需要代理加录 SSE，最小重组器的骨架是这样：
 
 ```python
 # mini_sse.py — 不到 80 行的 SSE 累积器
@@ -679,14 +691,14 @@ class MiniSSEReassembler:
 
 1. **先支持你最关心的一个协议**（Anthropic 或 OpenAI Chat Completions），跑通了再加其他。同时支持三个会让累加逻辑迅速臃肿。
 2. **`events` 列表和 `snapshot` 同时维护**。前者是原始事件流（debug 用、可选关），后者是累积结果（写存储用、必须保留）。
-3. **`reconstruct()` 是无状态查询**，可以随时调，方便测试。不要把"结束"的逻辑写在 reassembler 里 —— 外层调用方决定什么时候算结束。
+3. **`reconstruct()` 是无状态查询**，可以随时调，方便测试。不要把"结束"的逻辑写在 reassembler 里，外层调用方决定什么时候算结束。
 4. **测试**：找几个真实的 SSE 流量样本（用 `curl --raw https://api.anthropic.com/v1/messages -d '{...}' -H 'authorization: ...'` 抓一份），存成 fixture，写单元测试 `feed_bytes(fixture); assert reassembler.snapshot == expected_msg`。这种测试好写、跑得快、回归性好。claude-tap 的 `tests/test_sse.py` 是个完整范本。
 
 ### 4.3 多 client 适配的策略表：把 if/else 升级成数据
 
 #### 4.3.1 12 个 client 的差异点清单
 
-claude-tap 支持 12 个 client。每个 client 的差异不止命令名，还有：
+claude-tap 支持 12 个 client。我们把它们的差异摊开看，不止是命令名不同：
 
 - 用什么环境变量做 base URL（`ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` / `KIMI_BASE_URL` / ...）
 - base URL 后面是不是要加 `/v1` 后缀
@@ -716,7 +728,7 @@ def run_client(client, port, args):
 
 12 个分支、每个 50-80 行，整个函数 1000 行起。新加一个 client 要 review 一长串 if 链确认没遗漏分支。坏处不是写法不好，是难以审查。
 
-#### 4.3.2 三种主流抽象
+#### 4.3.2 从 if/elif 到子类再到配置表
 
 **方案 A：if/elif 链**。一开始就否决了，1000 行不可维护。
 
@@ -734,7 +746,7 @@ class ClaudeClient(BaseClient):
         ...
 ```
 
-OOP 经典写法。代价是：12 个子类 × 平均 50 行 = 600 行 OOP boilerplate，而且**子类之间的差异看不见** —— 要回答哪个 client 不需要清环境变量，必须打开 12 个文件一个个看。
+OOP 经典写法。代价是：12 个子类 × 平均 50 行 = 600 行 OOP boilerplate，而且**子类之间的差异看不见**：要回答哪个 client 不需要清环境变量，必须打开 12 个文件一个个看。
 
 **方案 C：策略表（Strategy Table / Configuration Object）**。每个 client 是一行配置数据，所有 client 排成一张表。新增 client 等于表里加一行，读 client 差异等于看表的列。
 
@@ -791,7 +803,7 @@ CLIENT_CONFIGS: dict[str, ClientConfig] = {
 - `codex` 有 `strip_path_prefix`（OAuth 走的 endpoint 不需要 `/v1` 前缀）
 - `claude` 有 `nesting_env_keys`（避免 Claude Code 检测到自己嵌套调用而拒绝启动）
 
-这种"差异一目了然"的价值在 code review —— 新加 `codebuddy` 时 review 者只看新加的那一行和表里相似的 `claude` 对比，差异点全在几个字段里。
+这种"差异一目了然"的价值在 code review。新加 `codebuddy` 时 review 者只看新加的那一行和表里相似的 `claude` 对比，差异点全在几个字段里。
 
 `run_client()` 主体（`cli_clients.py:279-450+`）就成了通用流水线。核心 10 行逻辑：
 
@@ -814,7 +826,7 @@ async def run_client(port, args, client, proxy_mode, ca_cert_path):
     return await spawn_and_wait([cfg.cmd] + list(args), env)
 ```
 
-注意 `NODE_EXTRA_CA_CERTS` / `SSL_CERT_FILE` / `CODEX_CA_CERTIFICATE` / `REQUESTS_CA_BUNDLE` 4 个变量一起喂 —— 每种语言 / 库认不同的 env：
+注意 `NODE_EXTRA_CA_CERTS` / `SSL_CERT_FILE` / `CODEX_CA_CERTIFICATE` / `REQUESTS_CA_BUNDLE` 4 个变量一起喂，每种语言 / 库认不同的 env：
 
 | 环境变量 | 谁认 |
 |---|---|
@@ -823,7 +835,7 @@ async def run_client(port, args, client, proxy_mode, ca_cert_path):
 | `REQUESTS_CA_BUNDLE` | Python requests（Hermes 用） |
 | `CODEX_CA_CERTIFICATE` | Codex 的 Rust binary（OpenAI 自定义的，不是社区标准） |
 
-让 child 信任 CA 的环境变量碎片化是 MITM 工具的日常烦恼。同时喂 4 套是成本最低的鲁棒性 —— 多设几个变量没副作用，少设一个就调不通。
+让 child 信任 CA 的环境变量碎片化是 MITM 工具的日常烦恼。同时喂 4 套是成本最低的鲁棒性，多设几个变量没副作用，少设一个就调不通。
 
 新加一个 client 只需要：
 
@@ -842,19 +854,22 @@ async def run_client(port, args, client, proxy_mode, ca_cert_path):
 
 这三种 escape 是**对策略表模式的诚实补丁**。如果硬把它们塞进 dataclass 字段，会让字段定义复杂到失去意义（你不能在 frozen dataclass 里放任意 Python 函数）。明确分层：**90% 的差异走配置表，10% 的真特殊性走独立 helper**。
 
-#### 4.3.5 四条取舍
+#### 4.3.5 frozen、默认值、字典与空 tuple
 
-**取舍一：`frozen=True`**。让 `ClientConfig` 不可变。代价是 runtime 不能根据当前环境动态修改 client 行为（比如用户传了 `--debug` 就把 `default_proxy_mode` 改成 forward），这种场景必须在 `run_client` 入口判断、临时构造一个修改过的 cfg。收益是字典里的值不会被改写，多线程访问安全，单元测试能用一份 cfg fixture 跑所有 client。适配层这种启动时定型、运行时只读的对象，`frozen=True` 是合适选择。
+四个 dataclass 层面的决定：
 
-**取舍二：默认值集中在 dataclass 定义里，不在每个 entry 里写**。`ClientConfig.default_proxy_mode: str = "reverse"`，于是 `CLIENT_CONFIGS["claude"]` 不用写 `default_proxy_mode="reverse"`，只有 forward 派需要显式写。这条让 12 个 entry 平均行数从 15 行降到 8 行，整张表能在一屏幕内看完。代价是新读者要回 dataclass 定义查默认值。
+| 决定 | 收益 | 代价 |
+|---|---|---|
+| `frozen=True` | 字典里的值不会被改写，多线程访问安全，单元测试能用一份 cfg fixture 跑所有 client | runtime 不能根据当前环境动态改 client 行为（比如用户传 `--debug` 就把 `default_proxy_mode` 改成 forward），这种场景必须在 `run_client` 入口判断、临时构造一个修改过的 cfg |
+| 默认值集中在 dataclass 定义里，不在每个 entry 里写 | 有了 `ClientConfig.default_proxy_mode: str = "reverse"`，`CLIENT_CONFIGS["claude"]` 就不用再写一遍 `default_proxy_mode="reverse"`，只有 forward 派需要显式写；12 个 entry 平均从 15 行降到 8 行，整张表一屏看完 | 新读者要回 dataclass 定义查默认值 |
+| 用 `CLIENT_CONFIGS: dict[str, ClientConfig]` 而不是 list | `cfg = CLIENT_CONFIGS[client]` 是 O(1) 查找；列举所有 client 就是 `CLIENT_CONFIGS.keys()`；新加 client 时按字母序或类别 group 找位置 | 用 list 每次查都要遍历找 `cmd == client`，多个 client 共享一个 cmd（一个工具的多种用法）时还会出 bug |
+| `extra_base_url_envs` 用 `tuple[str, ...] = ()` 而不是 `Optional[List]` | frozen dataclass 的字段不能有可变默认值（`List` / `Dict` 会触发 dataclass error），空 tuple 做 sentinel 是 Python 社区惯例，读起来也清晰，表示"没有 extra" | — |
 
-**取舍三：用字典而不是 list 存表**。`CLIENT_CONFIGS: dict[str, ClientConfig]` 用 client 名做 key。优势：`cfg = CLIENT_CONFIGS[client]` 是 O(1) 查找；列举所有 client = `CLIENT_CONFIGS.keys()`；新加 client 时找位置 = 字母序排或按类别 group。如果用 list，每次查都要遍历找 cmd == client，多个 client 共享一个 cmd（一个工具的多种用法）时还会出 bug。
+适配层这种启动时定型、运行时只读的对象，`frozen=True` 是合适选择。
 
-**取舍四：`extra_base_url_envs` 不用 `Optional[List]` 而用 `tuple[str, ...] = ()`**。frozen dataclass 的字段不能有可变默认值（`List` / `Dict` 会触发 dataclass error），用空 tuple 做 sentinel 是 Python 社区惯例。读起来也清晰 —— 空 tuple 表示"没有 extra"。
+#### 4.3.6 100 行的策略表骨架
 
-#### 4.3.6 自己实现最小策略表
-
-适配多个外部 CLI / SDK / API 的工具，< 100 行的策略表骨架：
+我们要适配多个外部 CLI / SDK / API 时，< 100 行的策略表骨架就够用：
 
 ```python
 # mini_strategy_table.py
@@ -924,9 +939,9 @@ def _handle_special(cmd: str, args: list[str]) -> list[str]:
 
 ## 5. 几个工程细节
 
-下面这些是可以原样照抄到自己项目的工程小品味。
+下面这些是我们可以原样照抄到自己项目里的工程小品味。
 
-**aiohttp 自带的 hop-by-hop header 过滤**。`proxy.py:33-44` 维护了一个 `HOP_BY_HOP` frozenset 列出所有不该转发的代理头（`Connection`、`Keep-Alive`、`Proxy-Authenticate`、`TE`、`Trailers`、`Transfer-Encoding`、`Upgrade`），过滤函数 `filter_headers` 直接复用。这是 HTTP 协议规定的 hop-by-hop headers，写代理工具的人**应当**记住这张清单 —— 不过滤会导致一些 client 拒绝接受响应（比如 client 看到 `Transfer-Encoding: chunked` 但你只是 `Content-Length: N` 转发的，client 会 disconnect）。这条 frozenset 可以直接 copy 到任何 HTTP 代理项目里。
+**aiohttp 自带的 hop-by-hop header 过滤**。`proxy.py:33-44` 维护了一个 `HOP_BY_HOP` frozenset 列出所有不该转发的代理头（`Connection`、`Keep-Alive`、`Proxy-Authenticate`、`TE`、`Trailers`、`Transfer-Encoding`、`Upgrade`），过滤函数 `filter_headers` 直接复用。这是 HTTP 协议规定的 hop-by-hop headers，写代理工具的人**应当**记住这张清单，不过滤会导致一些 client 拒绝接受响应（比如 client 看到 `Transfer-Encoding: chunked` 但你只是 `Content-Length: N` 转发的，client 会 disconnect）。这条 frozenset 可以直接 copy 到任何 HTTP 代理项目里。
 
 **敏感 header 的"前缀保留 + 余下打码"**。`filter_headers(headers, redact_keys=True)` 在写 trace 时把 `Authorization: Bearer sk-abc123def456` 改成 `Authorization: Bearer sk-abc12...`（保留 12 字节）。这是个对的设计：
 
@@ -934,7 +949,7 @@ def _handle_special(cmd: str, args: list[str]) -> list[str]:
 - 完全保留 → trace 文件落到任何第三方就出事
 - 保留前缀 → 用户能识别这是哪个 key 的 trace，又不会泄露完整 secret
 
-12 这个数字也讲究 —— OpenAI / Anthropic 的 key 都以 `sk-XXX-` 或 `sk-ant-XXX-` 开头，保留 12 字节通常够看到 prefix 区分 organization / project。这条 pattern 凡是写 log scrubber 都用得上。
+12 这个数字也讲究，OpenAI / Anthropic 的 key 都以 `sk-XXX-` 或 `sk-ant-XXX-` 开头，保留 12 字节通常够看到 prefix 区分 organization / project。这条 pattern 凡是写 log scrubber 都用得上。
 
 **`Accept-Encoding: identity` 强制不压缩**。`proxy.py:564` 一行：
 
@@ -949,7 +964,7 @@ fwd_headers["Accept-Encoding"] = "identity"
 
 代价是上游响应的字节数变大、网络传输慢。但代理在本地 loopback、流量小、首字延迟比总字节数重要，这条 trade-off 是对的。任何 LLM 流式代理都建议照搬。
 
-**用 `iter_any()` 而不是 `iter_chunks()`**。aiohttp 的 `upstream_resp.content` 有 `iter_chunks()` / `iter_chunked()` / `iter_any()` 几种迭代方式。`iter_any()` 是"有数据就给"——多大都行，不限制单 chunk 大小。对 SSE 流式响应来说这是对的：上游每发送一个 event 我们就尽快转发，不要再 buffer。`iter_chunked(8192)` 会等到 8K 才给一次，引入额外延迟。这是 streaming 代理的一个不起眼但重要的选型细节。
+**用 `iter_any()` 而不是 `iter_chunks()`**。aiohttp 的 `upstream_resp.content` 有 `iter_chunks()` / `iter_chunked()` / `iter_any()` 几种迭代方式。`iter_any()` 是"有数据就给"，多大都行，不限制单 chunk 大小。对 SSE 流式响应来说这是对的：上游每发送一个 event，我们就尽快转发，不要再 buffer。`iter_chunked(8192)` 会等到 8K 才给一次，引入额外延迟。这是 streaming 代理的一个不起眼但重要的选型细节。
 
 **SQLite 持久化路径走 XDG**。`trace_store.py:38-48`：
 
@@ -966,13 +981,13 @@ def resolve_db_path() -> Path:
     return (base / "traces.sqlite3").resolve()
 ```
 
-`XDG_DATA_HOME` → `~/.local/share/` 是 Linux 的标准用户数据目录，不污染 home。环境变量覆盖（`CLOUDTAP_DB`）给开发者和测试用 —— 单元测试可以指向临时目录。这是 unix-native CLI 工具的标准做法。把 trace DB 放在 `~/Documents/.claude-tap-traces/` 之类的地方是新手写法。
+`XDG_DATA_HOME` → `~/.local/share/` 是 Linux 的标准用户数据目录，不污染 home。环境变量覆盖（`CLOUDTAP_DB`）给开发者和测试用，单元测试可以指向临时目录。这是 unix-native CLI 工具的标准做法。把 trace DB 放在 `~/Documents/.claude-tap-traces/` 之类的地方是新手写法。
 
-**`viewer.py` 把 5K 行 JS 内嵌成单文件 HTML**。`viewer_assets/` 下 12 个 JS 文件按职责切分（`state.js` 状态、`renderers.js` 渲染、`diff.js` 结构化 diff、`sidebar.js` 侧边栏、`live_bootstrap.js` SSE 接入），生成时拼成一个 `<script>` 块嵌进模板。**为什么不上 React + Vite？**——单文件 HTML 是 portable 的，用户能把它发给同事/塞进 issue 附件/上传到内网 wiki。任何打包工具一旦引入，离线分享就要带 `dist/` 目录，麻烦十倍。对"导出可分享 artifact"是核心需求的工具来说，vanilla JS + 拼接是正确选型。代价是没有组件复用、没有类型检查 —— 但 5K 行 viewer 还在"一个人能 hold 住"的规模内。
+**`viewer.py` 把 5K 行 JS 内嵌成单文件 HTML**。`viewer_assets/` 下 12 个 JS 文件按职责切分（`state.js` 状态、`renderers.js` 渲染、`diff.js` 结构化 diff、`sidebar.js` 侧边栏、`live_bootstrap.js` SSE 接入），生成时拼成一个 `<script>` 块嵌进模板。**为什么不上 React + Vite？** 单文件 HTML 是 portable 的，用户能把它发给同事/塞进 issue 附件/上传到内网 wiki。任何打包工具一旦引入，离线分享就要带 `dist/` 目录，麻烦十倍。对"导出可分享 artifact"是核心需求的工具来说，vanilla JS + 拼接是正确选型。代价是没有组件复用、没有类型检查，但 5K 行 viewer 还在"一个人能 hold 住"的规模内。
 
 ## 6. 适用边界
 
-两件事：什么场景适合用 claude-tap、它的哪些工程模式不要照搬。
+我们分两件事说：什么场景适合用 claude-tap，它的哪些工程模式不要照搬。
 
 ### 6.1 什么场景该用、不该用
 
@@ -989,7 +1004,7 @@ def resolve_db_path() -> Path:
 - **大规模流量分析**：trace 落 SQLite，单库十几万条记录开始变慢。再大体量要外接 ClickHouse / Loki 之类的存储。claude-tap 没设计这个。
 - **CI / 自动化测试**：默认 live viewer 会启动浏览器，CI 跑会卡。要在 CI 用必须加 `--tap-no-live --tap-no-open`，并且要打开 `--tap-no-update-check` 避免对 PyPI 的网络请求。能用但配置略繁琐。
 - **抓 Cursor IDE / VS Code 插件的流量**：claude-tap 是包装 CLI 进程的，IDE 用的不是 CLI、用的是 IDE 自己的 HTTP 客户端。Cursor CLI 可以抓（forward proxy 模式），但 Cursor 的 GUI 抓不到。
-- **代理 binary CLI 的 OAuth login 流程**：OAuth 跳浏览器后，浏览器跟上游握手 —— 那是浏览器和上游的事，跟 claude-tap 包装的 child 进程没关系。OAuth 完成把 token 写到 child 的 cache 里之后，claude-tap 才能开始抓 API 调用。
+- **代理 binary CLI 的 OAuth login 流程**：OAuth 跳浏览器后，浏览器跟上游握手，那是浏览器和上游的事，跟 claude-tap 包装的 child 进程没关系。OAuth 完成把 token 写到 child 的 cache 里之后，claude-tap 才能开始抓 API 调用。
 
 ### 6.2 哪些工程模式可以照搬、哪些不要
 
@@ -1006,21 +1021,21 @@ def resolve_db_path() -> Path:
 
 - **CONNECT 隧道的 loopback bounce trick**（`forward_proxy.py:336-403`）。这是给 macOS Python 3.11 兜底的。Linux 或 Python 3.12+ 直接用 `loop.start_tls()` 就够，少两次 socket 拷贝。
 - **`viewer.py` 拼 5K JS 成单 HTML 的写法**。这是 claude-tap 的领域决策（要单文件可分享），别的项目 95% 应该用现代前端工具链。不要因为 claude-tap 这么写就觉得"原来 vanilla JS 拼接是好习惯"。
-- **`_accumulate()` 里 `except Exception: pass`**。这条只在代理类工具有意义 —— 你的优先级是"别让 child 进程崩"。一般业务代码里这么写就是 anti-pattern。
+- **`_accumulate()` 里 `except Exception: pass`**。这条只在代理类工具有意义，你的优先级是"别让 child 进程崩"。一般业务代码里这么写就是 anti-pattern。
 - **路径里硬编码 `/v1/messages`、`/v1/responses` 这些 endpoint**。claude-tap 是 LLM 专用工具，硬编码合理。但如果你写个通用 HTTP 代理，把这个 list 改成可配置或者 wildcard。
 - **SQLite + JSON blob 存 trace**。`record_blobs` 表里把大的 message JSON 拆出来 dedup（`trace_store.py:873-887`），是个 nice-to-have 优化。但对一般日志型存储，直接 append JSONL 文件足够，不需要 schema 版本管理 + blob dedup 这种工程化。claude-tap 用 SQLite 是为了支持 dashboard 的跨会话查询。
 - **`PI_CODING_AGENT_DIR` / `CODEX_CA_CERTIFICATE` 这种"每家 client 一套环境变量"**。claude-tap 是被迫识别的，因为它服务于 12 个 client。你自己项目大概率没这么多上游，硬塞一个 N 字段配置表只会让代码空旷。等真出现第 3 个差异维度时再上策略表，不要预设。
-- **`_maybe_rewrite_hermes_gateway_start()` 这种 client-specific 函数堆**。escape hatch 当然合理，但当你的 escape hatch 函数加到第 5 个时，说明策略表模式已经不够用了，应该考虑重新设计抽象 —— 比如改成 `ClientConfig` 持有一个 `customize_argv: Callable | None` 字段。
+- **`_maybe_rewrite_hermes_gateway_start()` 这种 client-specific 函数堆**。escape hatch 当然合理，但当你的 escape hatch 函数加到第 5 个时，说明策略表模式已经不够用了，应该考虑重新设计抽象，比如改成 `ClientConfig` 持有一个 `customize_argv: Callable | None` 字段。
 
 ## 7. 自己实现一个 mini 版
 
-最有练手价值的项目是写一个专注于 Claude Code 一个 client、只支持反向代理、只录 streaming 的 mini-tap。1-2 周能做完，做完前面三个模式都跑通了。
+最有练手价值的项目，是我们自己写一个只认 Claude Code 一个 client、只支持反向代理、只录 streaming 的 mini-tap。1-2 周能做完，做完前面三个模式都跑通了。
 
 技术大纲：
 
-### 阶段 1：最小反向代理（半天）
+### 阶段 1：最小反向代理
 
-目标：能 `mini-tap claude` 启动 Claude Code，所有 `/v1/messages` 请求经过本地代理录到一个 JSONL 文件。
+半天的量。目标：能 `mini-tap claude` 启动 Claude Code，所有 `/v1/messages` 请求经过本地代理录到一个 JSONL 文件。
 
 技术栈：
 
@@ -1077,11 +1092,11 @@ async def main():
 asyncio.run(main())
 ```
 
-这个版本能用，但 streaming 响应会卡 —— `await resp.read()` 把整个响应收完再转发，Claude Code 看到的是"等几秒后一次性出全部"。
+这个版本能用，但 streaming 响应会卡，`await resp.read()` 把整个响应收完再转发，Claude Code 看到的是"等几秒后一次性出全部"。
 
-### 阶段 2：流式响应 + SSE 重组（2-3 天）
+### 阶段 2：流式响应 + SSE 重组
 
-目标：streaming UX 完全正常 + trace 里有完整重组后的 message snapshot。
+2 到 3 天。目标：streaming UX 完全正常 + trace 里有完整重组后的 message snapshot。
 
 把 `proxy` 函数改成上面 4.2.4 节展示的"边走边录"模式：
 
@@ -1118,9 +1133,9 @@ async def proxy(request):
 
 测试方法：跑一次 Claude Code 让它做 `read_file` 之类的工具调用，然后检查 trace 里是否能看到完整 reassembled 的 message（含 tool_use block）。
 
-### 阶段 3：加正向代理 + MITM CA（3-5 天）
+### 阶段 3：加正向代理 + MITM CA
 
-目标：能抓 Cursor CLI 这种没 base URL override 的 client。
+3 到 5 天，这一步最费时间。目标：能抓 Cursor CLI 这种没 base URL override 的 client。
 
 步骤：
 
@@ -1129,21 +1144,21 @@ async def proxy(request):
 3. 写 CONNECT 隧道处理。**先不要复刻 loopback bounce**，直接用 `loop.start_tls()`。这一段在 Linux 和 Python 3.12+ 上完全够用。
 4. 在 spawn 时注入 `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS`
 
-这一步会卡很久 —— 不是代码难，是调试难。建议：
+这一步会卡很久。不是代码难，是调试难。建议：
 
 - 用 `curl --cacert ca.pem --proxy http://127.0.0.1:8080 https://api.anthropic.com/v1/messages` 先验证 CA 信任和 proxy 路由都通
 - 用 `mitmproxy --listen-port 9090 -k` 跑一个对照组，对比握手成功失败的状况
 - 测试 client 用 Node.js 的 `fetch`（最简单），调通后再换 Python httpx、再换 Rust reqwest
 
-### 阶段 4：策略表抽象（1 天）
+### 阶段 4：策略表抽象
 
-目标：把"硬编码 Claude Code"重构成支持任意 client 的配置驱动结构。
+一天。目标：把"硬编码 Claude Code"重构成支持任意 client 的配置驱动结构。
 
 把 4.3.6 节的 `TargetConfig` 抽象搬过来。加 2-3 个 client（Codex、Kimi）。每加一个 client 都尽量只改配置不改 `run()` 函数。如果发现某个 client 必须改 `run()`，停下来想想：是不是要给 `TargetConfig` 加一个新字段？
 
-### 阶段 5（可选）：viewer 和 dashboard
+### 阶段 5：viewer 和 dashboard
 
-要做 claude-tap 完整功能（HTML viewer、live SSE、跨会话 dashboard），加阶段 5。这一步是纯前端 + SQLite 工作，没有新模式。建议直接用 React + Vite，比 5K 行 vanilla JS 拼接友好。
+这一阶段可选。要做 claude-tap 完整功能（HTML viewer、live SSE、跨会话 dashboard），加阶段 5。这一步是纯前端 + SQLite 工作，没有新模式。建议直接用 React + Vite，比 5K 行 vanilla JS 拼接友好。
 
 ## 8. 延伸阅读
 
@@ -1156,8 +1171,8 @@ async def proxy(request):
 
 **同领域的书 / 论文**：
 
-- 《Computer Networking: A Top-Down Approach》（Kurose & Ross）第 3 章 transport 和第 7 章 security 的 TLS 部分 —— 如果你 CONNECT + TLS termination 这一段读得吃力，回去复习这一节。
-- TLS 1.3 RFC 8446 —— 如果你想理解为什么 CONNECT 之后必须立刻 TLS handshake、为什么 SAN 比 CN 重要。
-- 《Designing Data-Intensive Applications》第 11 章 Stream Processing —— 流式数据处理的通用思路。`SSEReassembler` 是一个 minimal 的 stream processor，理解 stateful streaming 的更大语境会让人看懂它的取舍。
+- 《Computer Networking: A Top-Down Approach》（Kurose & Ross）第 3 章 transport 和第 7 章 security 的 TLS 部分。如果你 CONNECT + TLS termination 这一段读得吃力，回去复习这一节。
+- TLS 1.3 RFC 8446。如果你想理解为什么 CONNECT 之后必须立刻 TLS handshake、为什么 SAN 比 CN 重要。
+- 《Designing Data-Intensive Applications》第 11 章 Stream Processing。流式数据处理的通用思路。`SSEReassembler` 是一个 minimal 的 stream processor，理解 stateful streaming 的更大语境会让人看懂它的取舍。
 
 读源码的建议路径：`proxy.py` → `forward_proxy.py` → `certs.py` → `sse.py` → `cli_clients.py` 这 5 个文件依次读完，每读完一个写一段我学到的可迁移模式。读完不写 mini-tap 也行，但连一段笔记都不写就过去了，学到的东西一周后会忘掉八成。
