@@ -15,6 +15,7 @@
 - [第 5 章　botmux：把 AI 编程 CLI 投影到飞书的会话编排器](book/05-botmux.md)
 - [第 6 章　LLM Space：给 Agent 开发者的本地调试工作台](book/06-llm-space.md)
 - [第 7 章　vercel-labs/skills：Agent Skill 的规范、版本与分发](book/07-vercel-skills.md)
+- [第 8 章　claude-for-legal：一个垂直行业的 AI 能力怎么组织](book/08-claude-for-legal.md)
 
 ## 收录候选(待写)
 
