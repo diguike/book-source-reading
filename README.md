@@ -1,84 +1,85 @@
 # 源码精读
 
-> 一本持续追加的书。每一章是一个开源仓库的深度精读,目标是**把项目当教学标本**,让读者读完既会用、又能自己复刻 mini 版,还能把里面的工程模式迁移到别的项目里。
+> 一本持续追加的书。每一章拆一个开源仓库，目标是让你读完既会用、又能自己写个 mini 版，还能把里面的工程模式搬到自己项目里。
 
-## 这本书在做一件什么事
+在线阅读：**[inferloop.dev/source-reading](https://inferloop.dev/source-reading)**
 
-工程师吸收知识最高效的两种方式是:**亲手造一遍**,**或者读懂别人造好的**。前者门槛高、周期长;后者门槛低,但绝大多数源码精读文章止步于"它做了什么",不回答"为什么这么设计、其他项目怎么选、换你来写要怎么动手"。
+## 这本书和别的源码分析有什么不一样
 
-之所以采取"源码精读"的形态,而不是写一本完整的书,是因为单一项目的复杂度不足以撑起一本完整书,但它的核心模块仍然有**可迁移、可复用的工程模式**值得讲透。读者付出读一章书的时间,得到的回报也必须和读一章书相当。
+大部分源码分析文章停在「它做了什么」——把调用链画一遍，把关键函数翻译一遍。读的时候很爽，合上就忘，因为它没回答真正有用的三个问题：为什么这么设计？别的项目怎么选的？换你来写从哪下手？
 
-每一章挑一个**值得读、足够成熟、核心模块代码量在 10K 行左右**的开源仓库,围绕三条教学线索展开:
+每一章都按这个逻辑组织：
 
-1. **怎么用** — 5 分钟跑起来,典型场景的接入方式
-2. **核心模块怎么实现** — 每个核心模块按"问题 → 主流方案对比 → 项目选择 → 关键代码 → 关键取舍 → mini 复刻路径"展开
-3. **如何迁移** — 这些工程模式可以照搬到你自己的项目里的哪些场景,哪些**不能**照搬
+1. **怎么用** — 5 分钟跑起来，最小可用示例，典型接入路径
+2. **核心模块怎么实现** — 挑 2 到 4 个最值得讲的模块，每个都是：这个模块要解决什么工程问题 → 主流有哪几种解法、各自代价 → 项目选了哪个、背后的硬约束是什么 → 关键代码在哪一行 → 放弃了什么 → 自己写一个最小版本怎么动手
+3. **能搬走什么** — 哪些模式可以照抄到你的项目，哪些**不能**照抄，以及为什么
 
-不做"逐文件翻译",不做"凭什么跑出来的评测",不当项目的形象代言人。每篇开头都明确告诉读者**读完能学到的 3 个可迁移工程模式**,正文每一节都为这三个目标服务。
+每篇开头就写清楚读完能学到的可迁移工程模式（在 frontmatter 的 `learning_objectives` 字段里），正文每一节都为这几条服务。不写逐文件翻译，不写项目评测，不当谁的形象代言人。
 
-## 这本书写给谁
+所有源码引用都带 `path/to/file.ext:行号`，并锁定到具体的 git tag（项目没打 tag 时锁 commit），不引 main 分支——上游一改，行号就对不上了。
 
-- 有 2 年以上工程经验的开发者,想从"能用"进阶到"能造"
-- 对 AI Agent / LLM Infra / 开发者工具这些领域的开源项目有兴趣
-- 习惯先读源码再相信文档,认同"看 README 不如看 internal/"
-- **不适合**:刚学编程的新手(每章默认你能读懂目标项目的语言)、只想找现成方案抄的人(本书不提供"复制粘贴可用"的最小实现)
+## 写给谁看
 
-## 已收录精读
+适合：
 
-每一章都是一个独立的开源仓库精读,可以任意顺序读。
+- 有 2 年以上工程经验，想从「会用」进阶到「能造」
+- 关注 AI Agent、LLM Infra、开发者工具这几个方向的开源项目
+- 习惯先翻源码再看文档
 
-**前言**
+不适合：
+
+- 刚开始学编程的（每章默认你能读懂目标项目用的语言）
+- 只想找现成方案复制粘贴的（这本书不提供开箱即用的最小实现，只提供思路和骨架）
+
+## 目录
+
+每一章是一个独立的开源仓库精读，互不依赖，任意顺序读都行。
 
 - [前言](book/00-preface.md)
 
 **已收录**
 
-- [第 1 章　CLIProxyAPI：把藏在 CLI 后面的模型还原成标准 API](book/01-cliproxyapi.md)
-- [第 2 章　Superpowers：用 Prompt 把 Agent 训成一个有纪律的工程师](book/02-superpowers.md)
-- [第 3 章　sub2api：把有状态的订阅后端做成多账号 API 网关](book/03-sub2api.md)
-- [第 4 章　claude-tap：抓 AI Coding Agent 流量的本地代理](book/04-claude-tap.md)
-- [第 5 章　botmux：把 AI 编程 CLI 投影到飞书的会话编排器](book/05-botmux.md)
-- [第 6 章　LLM Space：给 Agent 开发者的本地调试工作台](book/06-llm-space.md)
-- [第 7 章　vercel-labs/skills：Agent Skill 的规范、版本与分发](book/07-vercel-skills.md)
-- [第 8 章　claude-for-legal：一个垂直行业的 AI 能力怎么组织](book/08-claude-for-legal.md)
+| 章节 | 精读的项目 | 核心讲什么 |
+|---|---|---|
+| [第 1 章　CLIProxyAPI：把藏在 CLI 后面的模型还原成标准 API](book/01-cliproxyapi.md) | [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) | 不靠中间结构体的 N×M 协议翻译矩阵；带配额会过期的凭证池怎么调度；长驻服务的零停机热更新 |
+| [第 2 章　Superpowers：用 Prompt 把 Agent 训成一个有纪律的工程师](book/02-superpowers.md) | [obra/superpowers](https://github.com/obra/superpowers) | 用 description 触发的渐进式技能加载替代巨型 system prompt；把 prompt 当对抗性测试来写，堵住 Agent 的合理化绕过 |
+| [第 3 章　sub2api：把有状态的订阅后端做成多账号 API 网关](book/03-sub2api.md) | [Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api) | 三层递进的粘性会话调度；HTTP 入 WebSocket 出的协议桥接；OAuth token 池的并发安全刷新 |
+| [第 4 章　claude-tap：抓 AI Coding Agent 流量的本地代理](book/04-claude-tap.md) | [liaohch3/claude-tap](https://github.com/liaohch3/claude-tap) | 反向代理和自签 CA 正向代理怎么选；SSE 流式响应的边走边录重组；用策略表抹平 N 个 client 的适配差异 |
+| [第 5 章　botmux：把 AI 编程 CLI 投影到飞书的会话编排器](book/05-botmux.md) | [deepcoldy/botmux](https://github.com/deepcoldy/botmux) | 三个正交变化轴各做一个适配器；编排进程重启不杀子进程；把别人写的 TUI 投影成可交互 Web 终端 |
+| [第 6 章　LLM Space：给 Agent 开发者的本地调试工作台](book/06-llm-space.md) | [deer-flow/llm-space](https://github.com/deer-flow/llm-space) | 在没有原生流的通信边界上重建异步迭代器；一套 UI 跑两个运行时；把细粒度事件流折叠成可增量渲染的快照 |
+| [第 7 章　vercel-labs/skills：Agent Skill 的规范、版本与分发](book/07-vercel-skills.md) | [vercel-labs/skills](https://github.com/vercel-labs/skills) | 规范三层结构不一致时以哪层为准；没有 version 字段怎么做版本控制；一份内容投给 N 个工具目录；内网自建分发源 |
+| [第 8 章　claude-for-legal：一个垂直行业的 AI 能力怎么组织](book/08-claude-for-legal.md) | [anthropics/claude-for-legal](https://github.com/anthropics/claude-for-legal) | 垂直领域能力怎么切成插件和技能；私有知识层的模板与实例分离；知识库自进化闭环；多 Agent 编排的权限分层与供应链门禁 |
 
-后续收录的项目会持续追加到这里。
+后续收录的项目会持续追加到这里。完整目录也见 [SUMMARY.md](SUMMARY.md)。
 
 ## 收录标准
 
-不是所有热门项目都值得精读。新精读进入这本书必须同时满足:
+热门不等于值得精读。进这本书要同时满足四条：
 
-1. **GitHub star ≥ 5K 或在领域内有明确影响力**(避免读完没人关心)
-2. **核心模块在 10K 行代码以内**(读得动,讲得清,3-5 万字能讲透)
-3. **设计上有真正的取舍**(纯 CRUD / 纯封装 / 纯算法实现的项目不收)
-4. **代码质量在线**(屎山项目不收,读完只会让读者沮丧)
+1. **star ≥ 5K，或在领域内有明确影响力** — 避免写完没人关心
+2. **核心模块 10K 行代码以内** — 读得动，也讲得清
+3. **设计上有真正的取舍** — 纯 CRUD、纯封装、纯算法实现的项目不收，因为没有可讲的选择
+4. **能提炼出至少 3 个可迁移的工程模式** — 注意是模式，不是项目特性。提不出来说明还没读透，回去补功课
 
-读者可以在 issue 里提名候选项目,但作者保留"哪些值得写"的最终判断。
+代码质量太差的不收，读完只会让人沮丧。
 
-## 一篇精读的标准结构
-
-每篇精读固定 8 节,字数控制在 1.5-2.5 万字:
-
-1. **开篇 + 学习目标** — 第一段直接告诉读者"读完你会学到的三个可迁移工程模式"
-2. **5 分钟跑起来** — 怎么 install、怎么配置、最小可用示例
-3. **全景架构** — 一张 Mermaid 图 + 目录树对照 + 核心抽象列表
-4. **核心模块教学** — 挑 2-4 个最值得讲的模块,每个按 6 段式展开:问题 → 主流方案对比 → 项目的选择 → 关键代码 → 关键取舍 → mini 复刻路径
-5. **工程细节闲谈** — 选型、命名、目录组织上的小品味
-6. **适用边界 + 不该照搬的部分** — 什么场景应该用,哪些工程模式可以照搬、哪些不要
-7. **自己写一个 mini 版的路线图** — 1-2 周可完成的 mini 项目大纲
-8. **延伸阅读** — 同领域相关项目、相关书
-
-所有源码引用必须带 `path/to/file.ext:行号` 并锁定到具体 tag,不引 main 分支(防链接腐烂)。
-
-每篇 frontmatter 必填 `learning_objectives` 字段,声明三个可迁移工程模式 —— 写之前先想清楚,写完回头检查每一节是否为这三个目标服务。
+欢迎在 issue 里提名候选项目，最终写哪些由作者判断。
 
 ## 关于作者
 
-[diguike](https://github.com/diguike) — Agent 工程师，全栈工程师出身，做 Agent 自进化、长程 Agent、AI 资产建设与团队 AI 体系搭建。AI Agent 工程系列书籍作者，其他作品:
+[diguike](https://github.com/diguike) — Agent 工程师，全栈工程师出身，方向是 Agent 自进化、长程 Agent、AI 资产建设（skill / prompt / 知识库 / 评测集）和团队 AI 体系搭建。
 
-- 《Hermes Agent 源码解读》
-- 《OpenClaw 源码解析》
-- 《Agent Memory 工程实战》
-- 《AI Token 中转站实战》
-- 《百万级 AI Agent 平台架构》
-- 《AI Agent 评测工程实战》
+其他作品（均可在 [inferloop.dev](https://inferloop.dev) 在线阅读）：
+
+| 书 | 讲什么 |
+|---|---|
+| [Hermes Agent 源码解读](https://inferloop.dev/hermes-agent) | 一个 Agent 的架构设计从头拆到尾 |
+| [OpenClaw 源码解析](https://inferloop.dev/openclaw) | 现代 Agent 系统的架构与工程实践，含可运行的 Mini OpenClaw |
+| [Agent Memory 工程实战](https://inferloop.dev/claude-mem) | 从 claude-mem 源码到企业级记忆平台 |
+| [AI Token 中转站实战](https://inferloop.dev/llm-gateway) | 从 0 搭一个企业级 LLM 网关 |
+| [百万级 AI Agent 平台架构](https://inferloop.dev/enterprise-agent) | 智能客服 SaaS 的完整架构实战 |
+| [Agent 评测工程实战](https://inferloop.dev/agent-evals) | 怎么给 Agent 建一套能落地的评测体系 |
+
+## 关于引用
+
+书中引用的开源项目版权归各自作者所有。每处源码引用都标注了文件路径、行号和对应的 git tag，方便对照原仓库核实。发现引用错误或行号对不上，欢迎提 issue。
