@@ -5,7 +5,7 @@ based_on_tag: v1.2.0
 based_on_commit: c13656d
 written_at: 2026-09-04
 learning_objectives:
-  - 能按目标程序的能力与约束选择参数隔离、环境隔离或应用包改写，而不是用一种复制方案处理所有程序
+  - 能按目标程序的能力，在参数隔离、环境隔离和应用包改写之间按从浅到深的顺序选择
   - 能实现一个原生启动器，在不修改业务代码的情况下重定向数据目录、语言和代理配置
   - 能解释 macOS 应用身份、代码签名、entitlements 与 App Sandbox 的关系，并划清兼容性改造和安全隔离的边界
   - 能为带删除和提权能力的本地工具设计可信状态、路径约束、输入转义与失败回滚
@@ -17,11 +17,18 @@ last_synced: "2026-09-04"
 
 [ATBClone](https://github.com/aitobox/ATBClone) 是一个 macOS 应用多开工具。给它一个 `/Applications/WeChat.app`，它会生成带独立名称、Bundle ID 和数据目录的第二个 `.app`。Chrome、Firefox 这类原生支持多配置目录的程序可以只做一层启动包装；微信、Telegram 等程序则需要复制应用包、改身份、替换入口，再重新签名。
 
-应用多开难在身份和状态，复制文件只是第一步。把微信复制一份再打开，两个进程虽然来自两份二进制，但如果还用同一个用户目录、同一个 Bundle ID 或同一把单实例锁，第二个进程会把打开请求转给第一个，或者跟它抢同一个数据库。反过来，改动应用包又会立刻破坏开发者签名，还可能让钥匙串、推送和系统权限失效。
+应用多开难在身份和状态，复制文件只是第一步。以飞书为例：把 `.app` 复制一份再打开，第二个进程启动时会调用 Chromium 的 `ProcessSingleton::NotifyOtherProcessOrCreate()`，发现已有实例在跑，就通知第一个实例把窗口拉到前台，自己以退出码 34 退出（`src/atbclone/core/engines.py:557-566` 的注释记录了这个行为）。两个进程只要还共用同一个用户目录、同一个 Bundle ID 或同一把单实例锁，就会出现这种“打开了却没开出来”的情况，或者两个进程抢同一个数据库。反过来，改动应用包又会立刻破坏开发者签名，还可能让钥匙串、推送和系统权限失效。
 
-ATBClone 把这组冲突压进了一条流水线：先探测目标应用，再用 Recipe 选择克隆策略，最后生成新的应用包并登记生命周期。它的实现并不等于安全沙盒，其中不少兼容性手段会主动拆掉原应用的安全边界。正因如此，这个仓库适合同时学习两面：怎么让一个闭源桌面程序多开，以及系统工具在哪些地方必须比普通应用更谨慎。
+ATBClone 把这组冲突压进了一条流水线：先探测目标应用，再用 Recipe 选择克隆策略，最后生成新的应用包并登记生命周期。它不是安全沙盒，不少兼容性手段会主动拆掉原应用的安全边界。所以这个仓库既能看到怎么让闭源桌面程序多开，也能看到系统工具在哪些地方要格外小心。
 
-本章聚焦四个可迁移模式：基于能力探测的策略选择、原生启动器注入、签名失效后的身份重建，以及带提权和删除能力的生命周期设计。
+做 Agent 和开发工具的人会直接碰到这类问题。ATBClone 的内置 Recipe 里就有 Claude 桌面版、ChatGPT/Codex、VS Code、Zed：Claude 桌面版的规则除了隔离 `HOME`，还注入了 `CLAUDE_CONFIG_DIR`，Codex 的规则注入 `CODEX_HOME`（`src/atbclone/recipes/builtin/com.anthropic.claudefordesktop.yaml`、`com.openai.codex.yaml`），用来让两个账号的配置互不干扰。往外推一步，下面这些场景用的是同一组做法：
+
+- 给一个桌面 Agent 开多个隔离的工作区；
+- 写一个要兼容几十种目标程序的安装器；
+- 让 Agent 在隔离环境里拉起别人的程序；
+- 写一个需要提权、会删目录的本地 CLI。
+
+本章讲其中四个可以带走的做法：按能力探测选策略、用原生启动器注入进程环境、改包后重建签名链、给带提权和删除能力的工具守住路径边界。
 
 路径都从仓库根目录算起。本文锁定 tag `v1.2.0`、commit `c13656d`。核心 Python 代码约 1.3 万行。
 
@@ -66,7 +73,7 @@ atbclone remove Chrome-Work --keep-data
 
 ## 3. 全景架构
 
-一句话看懂：ATBClone 先把应用变成一份结构化描述，再把描述和 Recipe 合并成 `CloneTask`，最后由两种 Engine 生成新的 `.app`。
+ATBClone 先把应用变成一份结构化描述，再把描述和 Recipe 合并成 `CloneTask`，最后由两种 Engine 生成新的 `.app`。
 
 如图 3-1 所示，CLI 和 GUI 共用同一套核心流水线。界面只负责收参数；探测、决策、构建和状态登记都在 core 层完成。
 
@@ -98,15 +105,15 @@ flowchart LR
 | `CloneEngine` | `src/atbclone/core/engines.py:14-448` | 把任务翻译成应用包改造步骤 |
 | `CloneRecord` | `src/atbclone/core/state.py:11-25` | 保存后续更新和删除所需的状态 |
 
-Recipe 是架构的中轴。它不是一份应用名单，而是目标程序的适配协议：该用软分身还是硬分身，数据目录从参数还是环境变量注入，要不要移除 Sandbox，要不要处理单实例锁。新增应用主要改 YAML，构建引擎保持不动。
+Recipe 是架构的中轴，每份 Recipe 描述一个目标程序该怎么适配：用软分身还是硬分身，数据目录从参数还是环境变量注入，要不要移除 Sandbox，要不要处理单实例锁。新增应用主要改 YAML，构建引擎保持不动。
 
 ## 4. 核心模块
 
 ### 4.1 能力探测驱动的策略选择
 
-一句话总结：先问目标程序愿意开放哪条隔离通道，再决定改造深度。
+ATBClone 先看目标程序自己支持哪种隔离方式，再决定改造得多深。
 
-#### 4.1.1 复制应用不等于复制状态
+#### 4.1.1 桌面程序把状态放在哪
 
 桌面程序保存状态的方式没有统一答案。Chromium 接受 `--user-data-dir`，Firefox 接受 `-profile`，Electron 程序可能把路径落在 `app.getPath('userData')`，原生 Cocoa 程序还可能直接访问容器、Keychain 或硬编码目录。
 
@@ -138,7 +145,7 @@ else:
 
 代码节选自 `src/atbclone/core/app_prober.py:136-176`，tag `v1.2.0`。
 
-这段决策树的价值不在具体应用名，而在降级顺序：有正式能力就用正式能力；没有才进入兼容性更差、侵入性更强的路径。
+这段决策树里可以带走的是降级顺序：有正式能力就用正式能力；没有才进入兼容性更差、侵入性更强的路径。
 
 ```mermaid
 flowchart TD
@@ -154,11 +161,11 @@ flowchart TD
 
 图 4-1：从能力探测到克隆策略
 
-#### 4.1.2 静态字符串只是线索，不是能力证明
+#### 4.1.2 二进制字符串探测的可信度
 
 `BinaryArgumentProber` 最多读取可执行文件前 15 MB，从可打印字符串里寻找候选参数（`src/atbclone/core/argument_prober.py:67-130`）。随后 `LaunchArgumentValidator` 先查 Framework 白名单，陌生参数再回到二进制字符串确认（`src/atbclone/core/argument_prober.py:205-292`）。
 
-这比盲目塞参数稳一些，但仍可能误判。二进制里出现某个字符串，可能来自帮助文本、依赖库或已经废弃的分支，不代表当前入口会消费它。更可靠的能力系统应把证据分级：官方声明、已验证 Recipe、静态猜测。只有前两类可以自动执行，静态猜测最好停在建议层，并要求用户试运行确认。
+这比盲目塞参数稳一些，但仍可能误判。二进制里出现某个字符串，可能来自帮助文本、依赖库或已经废弃的分支，当前入口未必会读它。更可靠的能力系统应把证据分级：官方声明、已验证 Recipe、静态猜测。只有前两类可以自动执行，静态猜测最好停在建议层，并要求用户试运行确认。
 
 可迁移到别的工具时，可以把策略选择写成显式评分。下面是示意伪码，ATBClone 里没有 `planner` 这个对象：
 
@@ -176,11 +183,11 @@ plan = planner.choose(
 )
 ```
 
-关键不是评分公式，而是让每个决策能回答：证据来自哪里，可信度是多少，失败后降级到哪一步。
+评分公式怎么定都行，要紧的是每个决策都能回答三件事：证据来自哪里，可信度多高，失败后降到哪一步。
 
 ### 4.2 启动器是进程环境的适配层
 
-一句话总结：启动器不实现业务，只在 `exec` 前改好进程看到的世界。
+启动器不实现任何业务，只在 `exec` 之前改好进程的环境变量和参数，然后把自己替换成原程序。
 
 #### 4.2.1 为什么不能一直用 Shell 脚本
 
@@ -226,17 +233,17 @@ sequenceDiagram
 
 图 4-2：启动器只改启动边界，随后把进程交给原程序
 
-#### 4.2.2 环境隔离不是文件系统沙盒
+#### 4.2.2 HOME 隔离能挡住什么
 
 把 `HOME` 指向另一个目录，只会影响愿意读取这个环境变量的代码。目标程序仍然以当前用户身份运行，理论上可以访问该用户原本有权访问的其他文件。它也可能通过 Foundation API、容器路径或绝对路径绕过 `HOME`。
 
 ATBClone 还会为伪 Home 链接真实的 `Library/Keychains`，部分 Recipe 甚至链接 `.ssh`。微信规则就是如此（`src/atbclone/recipes/builtin/com.tencent.xinWeChat.yaml:1-11`）。这样做能减少登录或 Git 功能失效，却把最敏感的宿主凭据重新暴露给分身。
 
-所以启动器模式应该叫状态分流，而不是安全隔离。真正需要安全边界时，应使用 App Sandbox、独立 macOS 用户、容器或虚拟机。启动器适合解决多账号和文件锁冲突，不适合运行不可信代码。
+所以启动器做的是状态分流，提供不了安全隔离。真正需要安全边界时，应使用 App Sandbox、独立 macOS 用户、容器或虚拟机。启动器适合解决多账号和文件锁冲突，不适合运行不可信代码。
 
 ### 4.3 改一个字节，整条签名链都要重建
 
-一句话总结：签名不是构建末尾的盖章，它把应用身份、权限和完整性绑成一个整体。
+代码签名把应用身份、权限和完整性绑在一起，改了包里任何受保护的内容，这三样都要重新建立。
 
 #### 4.3.1 Bundle ID 与代码签名解决不同问题
 
@@ -266,13 +273,13 @@ flowchart TD
 
 图 4-3：应用包改写后的签名重建顺序
 
-#### 4.3.2 移除 Sandbox 是兼容性交换，不是隔离增强
+#### 4.3.2 移除 Sandbox 的代价
 
 如果 Recipe 设置 `strip_sandbox: true`，引擎先从原应用提取 entitlements，再删掉 App Sandbox 开关和一组绑定原开发者团队的能力（应用组、钥匙串组、推送、关联域名、iCloud 等），最后用剩余内容重签（`src/atbclone/core/engines.py:958-999`）。
 
 这一步解决的是新身份拿不到原团队专属 entitlement 的签名问题。代价也很直接：分身不再受原 App Sandbox 约束，访问范围可能扩大；与此同时，钥匙串组、推送、iCloud 和应用组功能可能失效。
 
-仓库还提供两类更深的二进制补丁：一类修改 Electron/Chromium 的 `ProcessSingleton` 调用，让每份副本都认为自己是主实例；另一类修改 CEF 的 Seatbelt 和 GPU 相关分支（`src/atbclone/core/engines.py:556-677`）。这些补丁依赖指令和字节模式，目标应用升级后可能匹配失败，也可能命中错误位置。
+仓库还提供两类更深的二进制补丁：一类针对开篇说的飞书单实例问题，把框架里调用 `NotifyOtherProcessOrCreate` 的那条 `bl` 指令改成 `mov w0, #0; nop`，让每份副本都当自己是主实例（`engines.py:557-566`）；另一类修改 CEF 的 Seatbelt 和 GPU 相关分支（`src/atbclone/core/engines.py:556-677`）。这些补丁依赖指令和字节模式，目标应用升级后可能匹配失败，也可能命中错误位置。
 
 安全判断应该分成两问：
 
@@ -281,13 +288,13 @@ flowchart TD
 
 不要把第一问的答案自动套到第二问。
 
-### 4.4 生命周期工具的真正边界是可信路径
+### 4.4 更新和删除：状态文件决定删什么
 
-一句话总结：能替用户递归删除目录的工具，状态文件就是权限边界的一部分。
+能替用户递归删除目录的工具，状态文件里写的路径就决定了它会删掉什么，所以状态文件本身也是权限边界的一部分。
 
 ATBClone 把 `clone_name`、源路径、目标路径、数据路径、Bundle ID 和代理摘要写进 `~/ATBClone/clones.yaml`（`src/atbclone/core/state.py:11-76`）。`update` 先删除旧应用包，再用原数据目录重新构建；`remove --with-data` 同时删除应用和数据。
 
-这套数据与程序分离的思路是对的。应用升级时只替换 bundle，账号和聊天数据留在外部目录。问题出在信任关系：删除命令直接采用状态文件里的 `dest_path` 和 `data_dir`，只做 shell quote，没有验证路径必须位于 ATBClone 管理根目录（`src/atbclone/cli/cmd_remove.py:59-77`）。
+数据和程序分开放，应用升级时只替换 bundle，账号和聊天数据留在外部目录。问题出在信任关系：删除命令直接采用状态文件里的 `dest_path` 和 `data_dir`，只做 shell quote，没有验证路径必须位于 ATBClone 管理根目录（`src/atbclone/cli/cmd_remove.py:59-77`）。
 
 ```mermaid
 flowchart LR
@@ -324,7 +331,7 @@ def assert_managed_path(path: Path, roots: list[Path]) -> Path:
 
 三步连起来，克隆一个不可信的应用，就等于让它的 `Info.plist` 以管理员身份执行命令。
 
-可迁移的原则很简单：Shell quoting 只能保护被正确放入一个 Shell 参数的位置。只要代码先拼模板、再让 `shell=True` 解释整段文本，就要逐个追踪数据来自哪里、落在哪种语法上下文。路径、PlistBuddy 命令、C 字符串和 AppleScript 是四种不同上下文，不能靠一个 escape 函数通吃。
+Shell quoting 只能保护被正确放进一个 Shell 参数的位置。只要代码先拼模板、再让 `shell=True` 解释整段文本，就要逐个追踪数据来自哪里、落在哪种语法上下文。路径、PlistBuddy 命令、C 字符串和 AppleScript 是四种不同上下文，不能靠一个 escape 函数通吃。
 
 ## 5. 能搬走的工程习惯
 
@@ -335,8 +342,6 @@ def assert_managed_path(path: Path, roots: list[Path]) -> Path:
 | 侵入性逐级升级 | 参数隔离优先，最后才改二进制 | 自动修复工具应优先可逆、可验证的动作 |
 | 数据与程序分开 | clone bundle 可重建，data dir 独立保留 | 桌面应用更新和插件更新都可减少迁移风险 |
 | 构建后校验 | 最后执行 `codesign -vv --deep --strict` | 任何会改制品的工具都要验证最终产物而非中间步骤 |
-
-其中最重要的是第一条和第三条。系统工具面对的不是一种输入，而是一批历史包袱不同的程序。好的自动化不是把失败隐藏起来，而是知道当前证据支持多深的改造，并让更危险的步骤显式可见。
 
 ## 6. 适用边界与不该照搬的部分
 
@@ -377,7 +382,7 @@ def build_soft_clone(source_app: Path, dest_app: Path, data_dir: Path):
     sign_and_verify(dest_app)
 ```
 
-这个 mini 版故意不处理通用 Cocoa 应用。遇到不支持数据目录参数的目标就明确报错，不自动改 `HOME`，更不移除 Sandbox。限制功能范围，反而能保住一条清楚的安全承诺：它只生成启动入口，不改目标程序的安全模型。
+这个 mini 版故意不处理通用 Cocoa 应用。遇到不支持数据目录参数的目标就明确报错，不自动改 `HOME`，更不移除 Sandbox。这样它能守住一条承诺：只生成启动入口，不改目标程序的安全模型。
 
 如果继续扩展，顺序应该是：先加入 dry-run，输出即将修改的文件和命令；再加入临时目录构建与原子替换；然后做路径约束和恶意输入测试；最后才考虑 hard clone。二进制 patch 应作为单独实验模块，按目标版本和哈希精确启用，不能依赖模糊字节搜索自动运行。
 
@@ -385,7 +390,5 @@ def build_soft_clone(source_app: Path, dest_app: Path, data_dir: Path):
 
 - [Apple Code Signing Guide](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/Introduction/Introduction.html)：理解为什么改动 `Info.plist`、资源或 Mach-O 后必须重新签名，以及签名身份和完整性如何绑定。
 - [App Sandbox Design Guide](https://developer.apple.com/library/archive/documentation/Security/Conceptual/AppSandboxDesignGuide/AboutAppSandbox/AboutAppSandbox.html)：补齐 Sandbox、entitlements 与最小权限模型。读完再回看 `strip_sandbox`，其代价会更清楚。
-- [Electron app.getPath](https://www.electronjs.org/docs/latest/api/app#appgetpathname)：理解 Electron 应用的数据目录从哪里来，也能看出命令行参数并不是唯一可靠的适配入口。
+- [Electron app.getPath](https://www.electronjs.org/docs/latest/api/app#appgetpathname)：理解 Electron 应用的数据目录从哪里来，也能看出命令行参数之外还有哪些适配入口。
 - [Chromium user data directory](https://chromium.googlesource.com/chromium/src/%2B/HEAD/docs/user_data_dir.md)：查看 Chromium 对 user data dir、profile 和平台默认路径的官方说明。
-
-ATBClone 最适合作为一份边界鲜明的系统工程标本：Recipe、探测器和双引擎展示了兼容性工具如何组织差异；Shell 拼接、递归删除、ad-hoc 重签和 Sandbox stripping 则展示了功能做通以后，安全承诺为什么必须重新审视。

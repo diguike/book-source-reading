@@ -5,63 +5,57 @@ based_on_tag: v5.1.0
 based_on_commit: f2cbfbe
 written_at: 2026-06-02
 learning_objectives:
-  - 能用 description 触发的技能文件（progressive disclosure），把一套方法论拆成可插拔、按需加载的能力库，而不是塞进一个越长越失效的巨型 system prompt
-  - 能把 prompt 当对抗性测试来写：先观察 agent 如何"合理化"绕过规则，再用 Iron Law + 反合理化表把 loophole 逐个堵死，并用 subagent 两段 review 把工程纪律工业化
-  - 能用 SessionStart hook 给 agent 注入持久的 bootstrap 上下文，并用同一套内容适配 Claude Code / Cursor / Codex / Gemini 等多个平台
+  - 能把一套方法论拆成按 description 触发、按需加载的技能文件，代替越写越长的 system prompt
+  - 能用 RED-GREEN 的方式写约束性 prompt：先录下 agent 违规时的借口，再写规则去堵，并验证堵住了
+  - 能把长任务拆给每次全新的子 agent，并用两段独立审查和新鲜的验证证据把关
+  - 能用 SessionStart 类 hook 在会话开始时注入引导内容，并用同一份内容适配多个 agent 平台
 feishu_url: "https://fivwvysqdz.feishu.cn/wiki/U4MqwytYPivkyAkW68ecYlR0nIg"
 last_synced: "2026-08-02"
 ---
 
 ## 1. Superpowers
 
-[Superpowers](https://github.com/obra/superpowers) 是一套装进 coding agent 的软件开发方法论。它没有库，也没有 MCP server，只有一组 Markdown 写的技能（skill）和一段开机引导，让你的 Claude Code / Codex / Gemini CLI 从"上来就闷头写代码"变成"先逼你把需求聊清楚、先写测试、完成前先自己跑一遍验证"。
+[Superpowers](https://github.com/obra/superpowers) 是一套装进 coding agent 的软件开发方法论。它没有库，也没有 MCP server，只有一组 Markdown 写的技能（skill）和一段开机引导。装上之后，Claude Code、Codex、Gemini CLI 不再上来就闷头写代码，而是先把需求问清楚、先写测试、宣布完成前先自己跑一遍验证。
 
-### 1.1 痛点：agent 知道该怎么做，但就是不做
+用过 coding agent 的人大多见过这几个场景：
 
-任何用过 coding agent 的人都熟悉这几个场景：
+- 你说“加个登录功能”，它直接开始写代码，不问你要什么，也不写测试。
+- 你让它用 TDD，它先把实现写完，再补几个必过的测试。
+- 它说“已完成、测试通过”，你一跑全红。
 
-- 你说"加个登录功能"，它直接开始写代码，不问你要什么、不写测试。
-- 你让它用 TDD，它先把实现写完，再补几个必过的测试糊弄你。
-- 它跑完活说"已完成、测试通过"，你一跑全红。
+模型不是不懂 TDD，它会给偷懒找理由：“这个太简单不用写测试”“我先探索一下代码库”。把规则写进一个长长的 system prompt 也不管用，prompt 越长，中间那几条越容易被忽略。作者 Jesse（obra）的做法是把每条纪律写成一个独立的技能，只在该用的时候加载，并且像写测试一样反复验证它能不能堵住 agent 的借口。
 
-问题不在于模型不懂 TDD、不懂 spec-first，这些它都"知道"。问题在于**它会为偷懒找借口**："这个太简单不用写测试""我先探索一下代码库""我记得这个怎么做"。模型的默认行为是讨好你、快速给出看起来完成的东西，而不是守纪律。
+这一章从 Superpowers 里拿走四个做法，它们都能用在别的 agent 系统上：
 
-把规则写进一个长长的 system prompt 不解决问题：prompt 越长，模型越容易"忘记"或"绕过"中间那几条。Superpowers 的作者 Jesse（obra）换了个思路：**把每条纪律写成一个独立的、会在恰当时机自动触发的技能，并且像写测试一样反复测它能不能堵住 agent 的借口**。
+1. **按需加载的技能库**。上下文里平时只放每个技能的一句触发条件，真用到时才载入正文。
+2. **先录借口再写规则**。先不加约束跑一遍，逐字记下 agent 违规时说的话，再写规则专门堵这些话。
+3. **每个任务一个新子 agent**。上下文不跨任务累积，做完先后过两道独立审查。
+4. **开机注入引导**。会话一开始用 hook 把“怎么用技能”的说明注入上下文，同一份内容适配多个平台。
 
-### 1.2 三个可迁移工程模式
-
-它有三个 prompt 工程手法，可以搬到别的 LLM agent 系统上：
-
-1. **Progressive disclosure：把能力拆成 description 触发的技能文件**（progressive disclosure，渐进式披露：上下文里平时只放每个能力的触发条件摘要，真用到时才载入完整正文）。与其把所有规则塞进一个巨型 system prompt（越长越失效），不如拆成一组小文件，每个带一句"什么时候用我"，让 agent 按需加载。要给 agent 装一套可插拔行为库的系统都用得上。
-
-2. **把 prompt 当对抗性测试来写**。普通人写 prompt 是"陈述规则"，Superpowers 写 prompt 是"先看 agent 怎么绕，再逐个堵 loophole"。Iron Law、反合理化表、subagent 两段 review 都是这套思路的产物。模型不照做规则时，调 prompt 都可以照这个思路来。
-
-3. **SessionStart hook 注入 bootstrap + 跨平台适配**（bootstrap，开机引导：系统冷启动时先注入的那段初始化上下文）。agent 怎么知道有这些技能？一个开机 hook 把引导内容注进上下文；同一套技能用不同的 hook 输出格式适配 Claude Code、Cursor、Codex、Gemini。要给 agent 注入持久规范，面对的都是同一个问题。
-
-本地对照源码看：
+对照源码：
 
 ```bash
 git clone --depth 1 --branch v5.1.0 https://github.com/obra/superpowers.git
 cd superpowers
 ```
 
-路径都从仓库根算起。项目核心是 `skills/` 下 14 个 `SKILL.md`、`hooks/` 下一个 SessionStart 脚本，几乎没有传统意义的"代码"，它的工程量在 prompt 里。本文基于 tag `v5.1.0`（commit `f2cbfbe`）。
+路径都从仓库根算起。项目核心是 `skills/` 下 14 个 `SKILL.md` 和 `hooks/` 下一个 SessionStart 脚本，工程量几乎全在 prompt 里。本文基于 tag `v5.1.0`（commit `f2cbfbe`）。
 
 ## 2. 5 分钟跑起来
 
-Superpowers 是 Claude Code 插件，一行装好（其他平台见 README 的对应小节）：
+Superpowers 是 Claude Code 插件，一行装好（其他平台见 README 对应小节）：
 
 ```
 /plugin install superpowers@claude-plugins-official
 ```
 
-装完**重启一个会话**：这一步关键，因为它的能力靠 SessionStart hook 注入（第 4.4 节展开）。然后随便开个空目录，说一句要做东西：
+装完要**重启一个会话**，因为它的能力靠 SessionStart hook 在会话开始时注入（4.4 节）。然后开个空目录，说一句要做东西：
 
 ```
 > 帮我做一个命令行待办工具
 ```
 
-装之前，agent 会直接开始写 `todo.py`。装之后，它的第一反应变成先触发 brainstorming 技能、反过来问你：
+没装之前，agent 会直接开始写 `todo.py`。装之后，它先触发 brainstorming 技能，反过来问你：
 
 ```
 Using superpowers:brainstorming to clarify requirements.
@@ -73,33 +67,34 @@ Using superpowers:brainstorming to clarify requirements.
 ...
 ```
 
-聊清楚后它会产出一份 spec、分段给你确认，再写一份实现计划，然后进入 subagent 驱动的执行：每个任务派一个全新的子 agent 实现，做完先过 spec 审查、再过代码质量审查，才进下一个任务。整个过程你基本不用插手。
+聊清楚后，它会产出一份 spec 分段给你确认，再写实现计划，然后逐个任务派子 agent 去做。每个任务做完先过 spec 审查，再过代码质量审查，才进入下一个。
 
-你不需要记任何命令。技能靠 description 自动触发，你描述任务，相关技能自己跳出来。想看有哪些技能，问一句"列出你的 superpowers 技能"即可。
+你不需要记命令。技能靠 description 自动触发，想看有哪些技能，问一句“列出你的 superpowers 技能”。
 
 ## 3. 全景架构
 
-Superpowers 的运行链路是一条"注入 → 引导 → 按需加载 → 执行方法论"的流水线：
+图 2-1 是 Superpowers 的运行链路：会话开始时注入引导，之后每来一个任务，agent 先判断该用哪个技能，再按技能里的流程做。
 
 ```mermaid
 graph TB
-    A[会话开始 startup clear compact] --> B[SessionStart hook session-start 脚本]
-    B --> C[把 using-superpowers 全文注入上下文]
-    C --> D[agent 记住一条元规则 哪怕 1% 可能相关也要 invoke 技能]
+    A[会话开始 startup clear compact] --> B[SessionStart hook]
+    B --> C[注入 using-superpowers 全文]
+    C --> D[agent 记住元规则 1% 可能相关也要用技能]
     E[用户发来任务] --> F[agent 判断哪个技能适用]
     D --> F
-    F --> G[Skill 工具按需加载对应 SKILL.md]
+    F --> G[Skill 工具加载对应 SKILL.md]
     G --> H[按技能里的流程执行]
-    H --> I[方法论流水线 brainstorm 到 plan 到 subagent 执行 到 TDD 到 verify]
 ```
 
-它的 14 个技能分三类（这张表就是这套方法论的目录）：
+图 2-1：从会话开始到技能执行
+
+14 个技能分三类：
 
 | 类别 | 技能 | 管什么 |
 |---|---|---|
-| 入口 / 元 | using-superpowers、writing-skills | 怎么用技能、怎么写技能 |
-| 流程（rigid，必须照做） | brainstorming、writing-plans、subagent-driven-development、executing-plans、test-driven-development、systematic-debugging、verification-before-completion | 一个需求从澄清到交付的纪律 |
-| 协作 / 收尾（flexible，按情境调整） | dispatching-parallel-agents、requesting-code-review、receiving-code-review、using-git-worktrees、finishing-a-development-branch | 多 agent 协作、code review、分支收尾 |
+| 入口 | using-superpowers、writing-skills | 怎么用技能、怎么写技能 |
+| 流程（必须照做） | brainstorming、writing-plans、subagent-driven-development、executing-plans、test-driven-development、systematic-debugging、verification-before-completion | 一个需求从澄清到交付 |
+| 协作与收尾（可按情境调整） | dispatching-parallel-agents、requesting-code-review、receiving-code-review、using-git-worktrees、finishing-a-development-branch | 多 agent 协作、审查、分支收尾 |
 
 每个技能是一个 `SKILL.md`，开头一段 YAML frontmatter：
 
@@ -110,40 +105,35 @@ description: Use when implementing any feature or bugfix, before writing impleme
 ---
 ```
 
-`description` 是整套机制的枢纽。它写给 agent 看，内容是**触发条件**，也就是"什么情况下该加载我"，而不是给人看的简介。agent 不需要预读 14 个文件的正文，只看 description 就能判断该不该 invoke。这就是第 4.1 节要讲的 progressive disclosure。
+`description` 是整套机制的枢纽。它写给 agent 看，内容是触发条件：什么情况下该加载我。agent 不用预读 14 个文件的正文，看 description 就能决定用不用。
 
-核心抽象有三个：
-
-| 抽象 | 位置 | 一句话定位 |
+| 抽象 | 位置 | 职责 |
 |---|---|---|
-| SKILL.md + description | `skills/*/SKILL.md` | 一条可独立加载、按需触发的能力 / 纪律 |
-| SessionStart hook | `hooks/session-start` | 开机把引导技能注入上下文，跨平台适配输出格式 |
-| 反合理化 prompt | 散布在各 SKILL.md | 用 Iron Law、Red Flags 表堵住 agent 绕过规则的借口 |
-
+| SKILL.md 与 description | `skills/*/SKILL.md` | 一条可独立加载、按需触发的纪律 |
+| SessionStart hook | `hooks/session-start` | 开机注入引导技能，按平台选输出格式 |
+| 反合理化 prompt | 散布在各 SKILL.md | 用铁律和借口表堵住 agent 绕开规则的理由 |
 
 ## 4. 核心模块
 
-### 4.1 Progressive disclosure：description 触发的可插拔技能库
+### 4.1 技能库：上下文里只放触发条件
 
-**一句话总结**：别把所有规则塞进一个巨型 system prompt（越长越被忽略），把每条能力拆成一个小文件，开头写一句"什么时候用我"，让 agent 自己按需加载，上下文里永远只有当前相关的那几条。
+system prompt 里只放每个技能的 name 和 description，正文等 agent 判断要用时再加载。这样上下文里始终只有当前相关的那几条规则。
 
-#### 4.1.1 问题：system prompt 越长越失效
+#### 巨型 prompt、向量检索、description 目录
 
-给 agent 装方法论，最直觉的做法是把所有规则写进 system prompt。但规则一多就出问题：上下文被几千行规范占满，模型对中间部分的注意力衰减（业界叫 "lost in the middle"，长上下文里中段信息最易被忽略），真正该触发的规则反而被漏掉。而且不同任务需要的规则不同：写代码用 TDD、调 bug 用 systematic-debugging，全堆在一起既浪费 token 又互相干扰。
+规则都写进 system prompt 最直接，但规则一多，模型对长上下文中段的注意力会衰减（lost in the middle），该触发的规则反而被漏掉；写代码和调 bug 需要的规则也不一样，全堆在一起还互相干扰。按需加载有两条路：
 
-#### 4.1.2 巨型 system prompt vs RAG 检索 vs description 触发
+| 做法 | 谁判断加载什么 | 代价 |
+|---|---|---|
+| 巨型 system prompt | 不判断，全部常驻 | 越长越被忽略，浪费 token |
+| 向量检索召回规则 | 相似度分数 | 要建检索设施，召回不稳，触发错了很难调 |
+| description 目录 | 模型读一句人话自己判断 | 依赖模型的判断力，可能漏判误判 |
 
-| 方案 | 怎么做 | 优点 | 代价 |
-|---|---|---|---|
-| 巨型 system prompt | 把所有规则一次性塞进系统提示词 | 实现简单，一定在上下文里 | 越长越被忽略；token 浪费；规则互相干扰 |
-| RAG / 向量检索 | 把规则存向量库，按相似度召回 | 上下文精简 | 要建检索基建；召回不稳；"什么时候该用"靠语义相似度猜，不可控 |
-| description 触发的技能（Superpowers） | 每个能力一个文件 + 一句触发条件，agent 读 description 自己判断 | 按需加载、触发条件显式可读、新增能力零改动 | 依赖平台支持 Skill 加载机制；触发判断交给模型 |
+向量检索和 description 都是按需加载，区别在触发条件可不可读。相似度是一个黑盒分数，`description: Use when...` 是一句人能改的话，触发错了改这句话就行。
 
-RAG 和技能都做"按需加载"，区别在**触发判断谁来做**：RAG 靠向量相似度（一个黑盒分数），技能靠一句人类可读的 `description: Use when...`（一个显式条件）。后者更可控、可调试，触发错了，改那句话就行。
+#### 三层机制
 
-#### 4.1.3 Superpowers 的选择：description + Skill 工具 + 一条元规则
-
-机制分三层。第一层，每个技能用 `description` 声明触发条件：
+第一层是 description 声明触发条件：
 
 ```yaml
 description: Use when implementing any feature or bugfix, before writing implementation code
@@ -151,13 +141,13 @@ description: Use when about to claim work is complete, fixed, or passing, before
 description: Use when creating new skills, editing existing skills, or verifying skills work before deployment
 ```
 
-第二层，agent 通过平台的 `Skill` 工具加载技能正文。`using-superpowers` 里特意强调（`skills/using-superpowers/SKILL.md:30`）：
+第二层是平台的 `Skill` 工具加载正文。`using-superpowers` 要求（`skills/using-superpowers/SKILL.md:30`）：
 
 > **In Claude Code:** Use the `Skill` tool. When you invoke a skill, its content is loaded and presented to you—follow it directly. Never use the Read tool on skill files.
 
-源码只给了这条规则，没有写理由。
+源码只给了这条规则，没写理由。
 
-第三层是兜底的元规则：光有 description 不够，模型可能偷懒不去 invoke。`using-superpowers` 用一段近乎严厉的话堵住：
+第三层是元规则。光有 description，模型可能懒得去加载，`using-superpowers` 开头用一段很重的话压住（`:11-13`）：
 
 ```
 If you think there is even a 1% chance a skill might apply to what you are doing,
@@ -165,41 +155,42 @@ you ABSOLUTELY MUST invoke the skill.
 IF A SKILL APPLIES TO YOUR TASK, YOU DO NOT HAVE A CHOICE. YOU MUST USE IT.
 ```
 
-#### 4.1.4 关键代码：触发的判定流程
-
-`using-superpowers` 里画了一张决策流程图（源文件用 graphviz `dot` 写，这里转成等价的 mermaid）：
+图 2-2 是 `using-superpowers` 里的判定流程（原文是 graphviz，这里转成 Mermaid）。
 
 ```mermaid
 graph TB
     A[收到用户消息] --> B[可能有技能适用吗]
-    B --> C[有 哪怕 1% 也 invoke 技能]
+    B --> C[哪怕 1% 也加载技能]
     B --> D[完全不可能 直接回复]
-    C --> E[宣告 Using 某技能 来做某事]
-    E --> F[技能里有 checklist 吗]
-    F --> G[每条建一个 TodoWrite 待办]
-    F --> H[严格按技能执行]
-    G --> H
+    C --> E[宣告 Using 某技能]
+    E --> F[技能有 checklist 就逐条建待办]
+    F --> H[按技能执行]
 ```
 
-图里有两个细节：
+图 2-2：技能触发的判定流程
 
-- **判定发生在任何动作之前**。连"先问个澄清问题""先看一眼代码库"都要排在查技能之后，理由是"技能会告诉你该怎么探索、怎么提问"。
-- **触发后先宣告**（"Using brainstorming to ..."）。加载技能变成用户看得见的一句话，走错了技能能当场发现。
+流程里有两处容易被忽略：
 
-还有一个容易忽略的接口：`using-superpowers` 开头有个 `<SUBAGENT-STOP>` 块，写明"如果你是被派来执行某个具体任务的子 agent，就跳过这个技能"。没有它，4.3 节那些"全新子 agent"也会被这条元规则要求去跑 brainstorm → spec → TDD 全流程，显然不对。这一句划清了边界：主 agent 走方法论，子 agent 只干被交代的活。
+- **查技能排在一切动作之前**，连“先问个澄清问题”“先看一眼代码库”都要往后排，理由是技能会告诉你该怎么问、怎么看。
+- **加载后先宣告**，比如 “Using brainstorming to ...”。加载哪个技能变成用户看得见的一句话，走错了能当场发现。
 
-#### 4.1.5 取舍：触发判断交给模型，靠元规则和宣告兜底
+还有一个边界：`using-superpowers` 开头有个 `<SUBAGENT-STOP>` 块（`:6-8`），写明被派去执行具体任务的子 agent 跳过这个技能。没有它，4.3 节那些子 agent 也会被元规则要求从 brainstorm 开始走全流程。
 
-把"什么时候加载哪个技能"交给模型判断，天然不如硬编码路由可靠，模型可能漏判、误判。Superpowers 接受这个代价，用两根拐杖兜底：一根是"哪怕 1% 也要 invoke"的元规则（把漏判的成本调到极高），一根是"先宣告再执行"（把误判暴露出来）。
+把触发判断交给模型，天然不如写死的路由可靠。Superpowers 用两招弥补：1% 元规则把漏判的代价抬高，先宣告再执行让误判暴露出来。
 
-Superpowers 对 description 的要求比官方更窄。仓库里收了一份 Anthropic 官方的 skill 编写指南，要求 description "同时写它做什么和什么时候用"（`skills/writing-skills/anthropic-best-practices.md:187`）；`writing-skills` 则规定 description 只写触发条件，以 "Use when..." 开头，不许概括技能的流程（`skills/writing-skills/SKILL.md:148-152`）。原因在 4.2.4 末尾那次实测里。
+#### description 只写触发条件
 
-#### 4.1.6 自己写一个最小技能库
+仓库里收了一份 Anthropic 官方的 skill 编写指南，要求 description 同时写“做什么”和“什么时候用”（`skills/writing-skills/anthropic-best-practices.md:187`）。`writing-skills` 的要求更窄：description 只写触发条件，以 “Use when...” 开头，不许概括技能的流程（`skills/writing-skills/SKILL.md:148-152`）。
 
-不依赖任何平台，用 30 行 Python 演示这套机制的内核：按 description 选技能、注入正文。
+理由是一次实测（`:154-156`）：某个 description 写成 “code review between tasks”，Claude 照着 description 只做了一次 review，跳过了正文流程图里的两次（先 spec 再质量）。改成只写触发条件后，它才去读流程图，做了两段 review。description 一旦概括流程，模型就会拿它当捷径，不再读正文。
+
+#### 脱离平台的最小实现
+
+下面这段 Python 不依赖 Claude Code，演示按 description 选技能的内核：目录进 system prompt，正文按需注入。
 
 ```python
-import glob, frontmatter   # pip install python-frontmatter
+import glob
+import frontmatter   # pip install python-frontmatter
 
 def load_skills(skill_dir: str) -> list[dict]:
     skills = []
@@ -208,12 +199,12 @@ def load_skills(skill_dir: str) -> list[dict]:
         skills.append({
             "name": post["name"],
             "description": post["description"],   # 触发条件
-            "body": post.content,                 # 正文，按需才注入
+            "body": post.content,                 # 正文，用到才注入
         })
     return skills
 
 def build_system_prompt(skills: list[dict]) -> str:
-    # 只把 name + description 放进系统提示词，正文不放
+    # 只放 name 和 description，不放正文
     catalog = "\n".join(f"- {s['name']}: {s['description']}" for s in skills)
     return (
         "你有以下技能。哪怕只有 1% 可能相关，也要先取用对应技能再行动。\n"
@@ -221,335 +212,255 @@ def build_system_prompt(skills: list[dict]) -> str:
         f"{catalog}"
     )
 
-# agent 回 "USE_SKILL: test-driven-development" 时，再把对应 body 注入下一轮对话
+def skill_body(skills: list[dict], reply: str) -> str | None:
+    # agent 回复 USE_SKILL: xxx 时，取出正文注入下一轮
+    if reply.startswith("USE_SKILL:"):
+        name = reply.split(":", 1)[1].strip()
+        return next((s["body"] for s in skills if s["name"] == name), None)
+    return None
 ```
 
-关键不是这几行代码，是两个设计决定：**系统提示词里只放 description 目录、不放正文**（progressive disclosure 的本质），以及**用一条强约束逼模型先查再做**。把这套接到任意 LLM API 上，就有了一个最小的可插拔技能系统。
+这段（Python 3.10+）对 Superpowers 仓库的 14 个真实技能跑过：放进 system prompt 的目录约 2.5 KB，14 份正文合计约 110 KB。接到任意 LLM API 上，就是一个最小的按需技能系统。
 
-### 4.2 把 prompt 当对抗性测试来写
+### 4.2 先录借口，再写规则
 
-**一句话总结**：模型不照做规则，不是因为没写清楚，是因为它会找借口绕过。所以写 prompt 要像写测试：先跑一遍看它怎么绕、把它的原话记下来，再写规则专门堵这些借口，然后验证堵没堵住。
+写“务必用 TDD”，模型照样先写实现，还会给自己一个理由：“这个改动太小，先写实现更快。”它不是没看懂规则，而是会为破例找理由。Superpowers 写约束性 prompt 的方法是：先看 agent 怎么违规，把它的原话记下来，再写规则专门堵这些话。
 
-#### 4.2.1 问题：声明式规则堵不住"合理化"
+#### 铁律加借口表
 
-你写"务必用 TDD"，模型照样先写实现再补测试，还会给自己一个理由："这个改动太小，先写实现更快。"声明一条规则，和模型真正遵守它，中间隔着一整套**合理化（rationalization，模型给自己开特例的借口）**。声明式 prompt（"你应该 X"）对此无能为力，因为它没有预判借口。
+常见的三种写法效果差别很大：
 
-#### 4.2.2 声明式 vs 加重语气 vs 对抗式
-
-| 写法 | 长什么样 | 效果 |
+| 写法 | 例子 | 效果 |
 |---|---|---|
-| 声明式 | "请遵守 TDD，先写测试" | 模型遇到借口就破例 |
-| 加重语气 | "务必、一定、非常重要：先写测试" | 短暂有效，长对话里衰减 |
-| 对抗式（Superpowers） | 一条不可商量的铁律 + 一张"这些念头=你在找借口"的反合理化表 | 把模型最可能用的借口逐条点名堵死 |
+| 陈述规则 | “请遵守 TDD，先写测试” | 遇到理由就破例 |
+| 加重语气 | “务必、一定、非常重要” | 短期有效，长对话里衰减 |
+| 铁律加借口表 | 一条不容商量的规则，外加一张“这些念头说明你在找借口”的表 | 提前点名模型最可能用的理由 |
 
-#### 4.2.3 Superpowers 的选择：Iron Law + 反合理化表
-
-每条 rigid 技能都有一条 **Iron Law**：一句话、全大写、不留解释空间。TDD 技能（`skills/test-driven-development/SKILL.md`）的是：
+每个必须照做的技能都有一条铁律（Iron Law），一句话、全大写。TDD 技能是：
 
 ```
 NO PRODUCTION CODE WITHOUT A FAILING TEST FIRST
 ```
 
-verification-before-completion 技能的是：
+verification-before-completion 技能是：
 
 ```
 NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 ```
 
-铁律之外，关键武器是**反合理化表**。`using-superpowers` 列了一张"这些念头意味着你在找借口"的对照表，把模型最常用的借口和它的真相并排放：
+铁律之外是借口表。`using-superpowers` 把模型常用的理由和对应的回应并排列出：
 
-| 模型的念头 | 真相 |
+| 模型的念头 | 回应 |
 |---|---|
-| "这只是个简单问题" | 问题也是任务，查技能 |
-| "我得先了解上下文" | 查技能在澄清提问之前 |
-| "我先探索一下代码库" | 技能会告诉你怎么探索，先查 |
-| "这个技能小题大做了" | 简单的事会变复杂，用它 |
-| "我记得这个技能" | 技能会更新，读当前版本 |
+| “这只是个简单问题” | 问题也是任务，先查技能 |
+| “我得先了解上下文” | 查技能在澄清提问之前 |
+| “我先探索一下代码库” | 技能会告诉你怎么探索 |
+| “这个技能小题大做了” | 简单的事会变复杂，用它 |
+| “我记得这个技能” | 技能会更新，读当前版本 |
 
-这张表没有重复规则本身。它列的是**模型会用来给自己开脱的原话**，并把这些话直接标成危险信号。模型一旦冒出"这只是个简单问题"的念头，表里就有一行在等着它。TDD 技能里还有一句把"打擦边球"也堵死：
+这张表没有重复规则本身，列的是模型会用来开脱的原话，并把这些话直接标成危险信号。TDD 技能里还有一句专门堵“打擦边球”：
 
 ```
 Violating the letter of the rules is violating the spirit of the rules.
 ```
 
-#### 4.2.4 关键机制：skill 本身用 TDD 写出来
+#### 借口表是测出来的
 
-借口表是测出来的。`writing-skills` 技能把写 prompt 直接定义成 TDD：
+`writing-skills` 把写技能直接定义成 TDD：
 
 > **Writing skills IS Test-Driven Development applied to process documentation.**
 >
 > **Core principle:** If you didn't watch an agent fail without the skill, you don't know if the skill teaches the right thing.
 
-对应到流程：先写测试用例（给 subagent 施压的场景），看它失败（不带技能时的 baseline 行为），再写技能，看测试通过（agent 守规矩了），最后重构（堵掉新出现的 loophole）。
+对应关系如下：
 
-映射关系它列得很清楚：
-
-| TDD 概念 | 写技能时对应 |
+| TDD | 写技能 |
 |---|---|
-| 测试用例 | 给 subagent 施压的场景 |
-| 测试失败（RED） | 不带技能时 agent 违规（baseline） |
-| 写最小实现 | 针对那些具体违规写技能 |
-| 测试通过（GREEN） | agent 现在守规矩了 |
-| 重构 | 找到新借口 → 堵掉 → 再验证 |
+| 测试用例 | 给子 agent 施压的场景 |
+| 测试失败（RED） | 不带技能时 agent 违规 |
+| 最小实现 | 针对这些具体违规写技能 |
+| 测试通过（GREEN） | agent 守规矩了 |
+| 重构 | 找到新借口，补上，再验证 |
+
+图 2-3 是这个循环。写技能本身也有一条同构的铁律：`NO SKILL WITHOUT A FAILING TEST FIRST`（`skills/writing-skills/SKILL.md:377`）。按这个流程，借口表的每一行都应该对应一次“看着 agent 用这句话破例”的观察。
 
 ```mermaid
 graph LR
-    A[写施压场景 测试用例] --> B[不给技能 跑 baseline]
-    B --> C[记下 agent 用的具体借口 RED]
-    C --> D[写技能 专门堵这些借口]
-    D --> E[再跑场景 看是否守规矩 GREEN]
-    E --> F[发现新借口]
+    A[写施压场景] --> B[不给技能跑一遍]
+    B --> C[记下 agent 的原话 RED]
+    C --> D[写技能堵这些话]
+    D --> E[再跑 看是否守规矩 GREEN]
+    E --> F[出现新借口]
     F --> D
 ```
 
-这套 RED-GREEN 循环也用在写技能这件事本身上，它有一条同构的 Iron Law：`NO SKILL WITHOUT A FAILING TEST FIRST`（`skills/writing-skills/SKILL.md:377`）。按这个流程，反合理化表里每一行都应当对应一次"看着 agent 用这句话破例"的观察。方法的核心就一句：**写约束性 prompt 之前，先无约束跑一遍，把失败录下来。** 没看过它怎么失败，写出来的规则只是猜测。
+图 2-3：用 RED-GREEN 循环写技能
 
-这套方法还测出一个反直觉的结论：description 不能概括技能的流程。`writing-skills` 记了一次观察（`skills/writing-skills/SKILL.md:154-156`）：某个 description 写成 "code review between tasks"，Claude 就照着 description 只做了一次 review，跳过了正文流程图里的两次（先 spec 再质量）；description 改成只写触发条件后，它才去读流程图、做了两段 review。description 一旦概括流程，就成了模型抄近路的入口。
+没看过它怎么失败，写出来的规则只是猜测。4.1 节 description 不能概括流程的结论，就是这样测出来的。
 
-#### 4.2.5 取舍：对抗式 prompt 啰嗦、且要持续维护
+#### 在自己的 prompt 上做一轮
 
-对抗式写法的代价很实在：prompt 变长、变啰嗦（一堆大写和"不可商量"），而且要持续维护。模型一升级，旧借口可能消失、新借口冒出来，反合理化表得跟着更新。声明式 prompt 写完就不用管，对抗式 prompt 像测试套件一样要养。
+不需要框架，照下面做一轮：
 
-值不值得，看场景：一次性的、容错高的任务，声明式够了；要 agent 长时间自主、且质量不能崩的流程（正是 coding agent 的处境），对抗式的维护成本换来的是可靠性。判断依据是**这条规则被违反的代价有多高**：代价高就值得为它写一套"测试"。
+1. **挑一条 agent 老不遵守的规则**，比如“返回 JSON 前必须校验 schema”。
+2. **RED**：不加约束让 agent 做 10 个相关任务，逐字记下它违规时给的理由，例如“这个响应很简单，应该没问题”。
+3. **GREEN**：写一条铁律（`NO RESPONSE WITHOUT SCHEMA VALIDATION`），加一张借口表，把上一步的理由逐条列进去。
+4. **REFACTOR**：再跑 10 个任务，把新出现的理由补进表里，重跑。两三轮后理由基本就枯竭了。
 
-#### 4.2.6 自己写：给你的 prompt 做一次 RED-GREEN
+这样写出来的 prompt 更长、更啰嗦，还要随模型升级重测：旧借口可能消失，新借口会冒出来，借口表得像测试套件一样维护。一次性、容错高的任务写一句陈述就够了；规则被违反代价高、agent 又要长时间自主运行时，这份维护成本才值得。
 
-不用任何框架，照着做一轮就懂：
+### 4.3 每个任务一个新子 agent
 
-1. **挑一条 agent 老不遵守的规则**（比如"返回 JSON 前必须校验 schema"）。
-2. **RED**：不给任何约束，让 agent 跑 10 个相关任务，**逐字记下它违规时给的理由**（"这个响应很简单，应该没问题"）。
-3. **GREEN**：写一条 Iron Law（`NO RESPONSE WITHOUT SCHEMA VALIDATION`）+ 一张反合理化表，把上一步记下的每个理由列进去、标成危险信号。
-4. **REFACTOR**：再跑 10 个任务，记下它用的**新**借口，补进表里，重跑。两三轮后借口就枯竭了。
-
-产出的不是一段漂亮文案，是一份"这个 agent 在这个任务上会怎么偷懒"的实测档案，比凭空写出来的规则可靠。
-
-### 4.3 subagent 驱动开发：把工程纪律工业化
-
-**一句话总结**：让一个 agent 从头到尾做完一个计划，它的上下文会越堆越乱、越往后越将就。Superpowers 的办法是每个任务派一个全新的子 agent，做完立刻过两道独立审查（先查符不符合 spec，再查代码质量），再进下一个任务。
-
-#### 4.3.1 问题：长任务里 agent 会"上下文腐烂"
-
-一个 agent 连做十个任务，前面任务的探索、试错、半成品都堆在它的上下文里。越往后，它越容易被早期的错误假设带偏、越倾向于"差不多就行"。而且它**自己审自己的代码**：刚写完就让它评价好不好，它几乎总说"挺好"。
-
-#### 4.3.2 单 agent 跑全程 vs 每任务 fresh subagent + 两段 review
-
-| 方案 | 怎么做 | 优点 | 代价 |
-|---|---|---|---|
-| 单 agent 跑全程 | 一个 agent 顺着计划做完所有任务 | 简单，无协调开销 | 上下文腐烂；自审无效；一处跑偏污染后续 |
-| 每任务 fresh subagent + 两段 review | 每个任务派全新子 agent，做完过 spec 审查 + 质量审查 | 上下文隔离干净；审查独立；主 agent 只做协调 | 协调开销；要精心构造每个子 agent 的输入 |
-
-#### 4.3.3 Superpowers 的选择：fresh subagent + 两段独立 review
-
-`subagent-driven-development` 的核心原则：
-
-> **Fresh subagent per task + two-stage review (spec then quality) = high quality, fast iteration**
-> **Why subagents:** 你把任务委派给隔离上下文的专用 agent……它们**绝不继承你这轮会话的上下文和历史**：你精确构造它们需要的一切。这也保住了你自己的上下文用于协调。
-
-执行流程是一条带回环的流水线：
+`subagent-driven-development` 把计划里的每个任务派给一个全新的子 agent，做完先过 spec 审查、再过代码质量审查，都通过才进入下一个任务。图 2-4 是这条流水线。
 
 ```mermaid
 graph TB
-    A[读计划 抽出每个任务的完整文本] --> B[派实现子 agent]
-    B --> C[实现 测试 提交 自审]
-    C --> D[派 spec 审查子 agent]
+    A[读计划 抽出每个任务全文] --> B[派实现子 agent]
+    B --> D[派 spec 审查子 agent]
     D --> E[符合 spec 吗]
-    E --> F[不符合 实现 agent 修 再审]
+    E --> F[不符合 实现方修改]
     F --> D
-    E --> G[派代码质量审查子 agent]
+    E --> G[派质量审查子 agent]
     G --> H[通过吗]
-    H --> I[不通过 实现 agent 修 再审]
+    H --> I[不通过 实现方修改]
     I --> G
-    H --> J[还有任务吗]
-    J --> B
-    J --> K[派最终整体审查子 agent]
+    H --> J[下一个任务或最终审查]
 ```
 
-如上图，三个工程决定撑起这条流水线：
+图 2-4：每个任务的实现与两段审查
 
-- **每个任务一个全新 subagent**：上下文从零开始，不带前面任务的包袱，杜绝腐烂。
-- **两段 review 分开**：spec 合规（做对了吗）和代码质量（做好了吗）是两件事，混在一起会互相妥协，所以拆成两个独立审查 agent，先过前者再过后者。
-- **审查 agent 独立于实现 agent**：不让"作者"审自己，换一个没写过这段代码的新 agent 来挑刺。
+技能里的核心原则：
 
-#### 4.3.4 关键机制：喂"完整任务文本"，且不信子 agent 的报告
+> **Fresh subagent per task + two-stage review (spec then quality) = high quality, fast iteration**
 
-两个反直觉但关键的细节。其一，主 agent 派活时，要把任务的**完整文本**塞给子 agent，而不是让它"去读计划文件的第 3 个任务"。因为子 agent 上下文是空的，它不知道"第 3 个任务"在哪、上下文是什么。`subagent-driven-development` 第一步就写明：
+原文接着解释为什么用子 agent：委派给隔离上下文的 agent，它们不继承当前会话的上下文和历史，需要的一切由主 agent 精确构造；主 agent 自己的上下文也因此留给协调工作。
+
+#### 为什么不让一个 agent 做到底
+
+一个 agent 连做十个任务，前面的探索、试错、半成品都堆在它的上下文里，越往后越容易被早期的错误假设带偏。它还在审自己的代码，刚写完就问它好不好，它几乎总说挺好。拆开后有三点不同：
+
+- **每个任务一个全新子 agent**：上下文从零开始，不带前面任务的包袱。
+- **两段审查分开**：做对了没有（符合 spec）和做好了没有（代码质量）是两件事，混在一起会互相妥协。
+- **审查者不是作者**：换一个没写过这段代码的 agent 来挑毛病。
+
+代价是协调开销：主 agent 要为每个子 agent 准备完整输入，多派几轮审查。任务之间越独立、单个任务质量要求越高，越适合这种方式；任务紧耦合、要频繁共享中间状态时，一个 agent 做到底反而顺手。
+
+#### 派活给全文，完成看证据
+
+两个细节决定这条流水线能不能跑通。
+
+第一，派活时把任务**全文**交给子 agent，而不是让它“去读计划文件的第 3 个任务”。子 agent 的上下文是空的，它不知道第 3 个任务在哪、前因后果是什么。技能第一步就写明：
 
 > Read plan, extract all tasks **with full text**, note context, create TodoWrite
 
-其二，子 agent 报告"完成了"时，主 agent **不能直接信**。它会自夸、会漏跑验证。这正好接上 4.2 节的 `verification-before-completion`：主 agent 要拿到新鲜的验证证据（重新跑测试的真实输出）才认可完成，而不是听子 agent 一句"测试通过"。两者咬合：subagent 驱动负责"谁来做、谁来审"，verification 负责"凭什么信完成了"。
+第二，子 agent 报告“完成了”，主 agent 不能直接信。它会漏跑验证，也会高估自己。这里接上 `verification-before-completion` 的铁律：主 agent 要拿到重新跑测试的真实输出，才认可完成。
 
-#### 4.3.5 取舍：协调开销换隔离质量
+#### 协调器骨架
 
-每任务派新 agent，代价是协调开销和"构造输入"的成本。主 agent 得为每个子 agent 准备完整上下文，多审查几道。换来的是上下文隔离和独立审查。
-
-可以把 fresh subagent 看成无状态函数：每次干净输入、干净输出，代价是上下文要显式传进去。单 agent 跑全程则像一个一直累积状态的长进程，简单，但状态会越积越脏。任务之间越独立、单任务质量要求越高，越该用前者；任务紧耦合、要频繁共享中间状态，单 agent 反而顺手。多 agent 编排都可以按这个标准来选。
-
-#### 4.3.6 自己写一个最简协调器
-
-骨架的重点不在派 agent，在**怎么构造每个子 agent 的输入**：它上下文是空的，你给什么它才有什么。下面是示意代码，`dispatch`、`build_context`、`verify_fresh` 要接到你自己的 agent 平台上：
+骨架的重点在于怎么给子 agent 构造输入。下面是示意代码，`dispatch`、`build_context`、`verify_fresh` 要接到你自己的 agent 平台上：
 
 ```python
 def run_plan(plan):
-    tasks = extract_tasks_with_full_text(plan)   # 关键：抽出每个任务的完整文本，不是序号
+    tasks = extract_tasks_with_full_text(plan)   # 抽出每个任务的全文，不是序号
     for t in tasks:
-        ctx = build_context(t)                    # 显式拼好：任务全文 + 相关文件 + 约束
+        ctx = build_context(t)                    # 任务全文 + 相关文件 + 约束
         while True:
-            result = dispatch("implementer", ctx + t.full_text)   # 全新子 agent
+            result = dispatch("implementer", ctx + t.full_text)   # 每次都是新 agent
             spec = dispatch("spec-reviewer", ctx + t.spec + result.diff)
             if not spec.ok:
-                ctx += f"\nspec 未过：{spec.issues}"; continue      # 让实现 agent 修，重审
+                ctx += f"\nspec 未过：{spec.issues}"
+                continue
             quality = dispatch("quality-reviewer", result.diff)
             if not quality.ok:
-                ctx += f"\n质量未过：{quality.issues}"; continue
-            if not verify_fresh(t):               # 不信报告，自己重跑验证拿证据
-                ctx += "\n验证未通过，重做"; continue
-            break                                 # 两段 review + 验证都过，下一个任务
+                ctx += f"\n质量未过：{quality.issues}"
+                continue
+            if not verify_fresh(t):               # 自己重跑验证，不信报告
+                ctx += "\n验证未通过，重做"
+                continue
+            break
 ```
 
-注意 `dispatch` 每次都是全新 agent（不传历史），`ctx + t.full_text` 是你亲手拼的输入，这两点就是"上下文隔离"和"喂完整任务文本"落到代码上的样子。`verify_fresh` 对应不信子 agent 报告、自己取证据。
+`dispatch` 每次都不带历史，输入全靠 `ctx + t.full_text` 显式拼出来，这就是上下文隔离落到代码上的样子。
 
-### 4.4 SessionStart hook：冷启动注入与跨平台适配
+### 4.4 SessionStart hook：开机注入引导
 
-**一句话总结**：agent 怎么知道自己"有 superpowers"？靠一个开机 hook，在每次会话开始时把引导技能的全文塞进上下文。同一个脚本按环境变量判断当前是哪个平台，输出对应格式的 JSON。
+按需加载有个先有鸡还是先有蛋的问题：agent 一开始不知道有这套技能，也不知道 1% 元规则。Superpowers 用一个 SessionStart hook，在每次会话开始时把 `using-superpowers` 的全文注入上下文。
 
-#### 4.4.1 问题：技能再好，agent 不知道存在也白搭
+让用户把引导贴进 CLAUDE.md 也行，但要用户自己维护，换一个平台就得再贴一遍。hook 的好处是用户无感，代价是要处理各平台输出格式的差异。
 
-progressive disclosure 解决了"按需加载"，但有个先有鸡还是先有蛋的问题：agent 一上来根本不知道有这套技能、不知道"哪怕 1% 也要 invoke"这条元规则。总得有人在会话开始时告诉它一次。
+#### 同一个脚本，只输出一个字段
 
-#### 4.4.2 写进 CLAUDE.md vs 手动 @ vs SessionStart hook 自动注入
-
-| 方案 | 怎么做 | 优点 | 代价 |
-|---|---|---|---|
-| 写进项目 CLAUDE.md | 让用户把引导贴进自己的配置文件 | 零额外机制 | 要用户手动维护；换平台各贴一遍 |
-| 每次对话手动 @ 引导文件 | 用户每轮自己提醒 | 灵活 | 累，且容易忘 |
-| SessionStart hook 自动注入（Superpowers） | 平台在会话开始自动跑脚本，注入引导全文 | 全自动、用户无感、可跨平台 | 依赖平台支持 hook；要处理各平台输出格式差异 |
-
-#### 4.4.3 关键代码：一个脚本喂多个平台
-
-`hooks/session-start` 是个 bash 脚本，干两件事：读出 `using-superpowers` 的全文，包成各平台认的 JSON 注入格式。注入内容的骨架：
-
-```bash
-session_context="<EXTREMELY_IMPORTANT>\nYou have superpowers.\n\n
-...（这里是 using-superpowers SKILL.md 的全文）...\n</EXTREMELY_IMPORTANT>"
-```
-
-难点在跨平台。同一份内容，不同 agent 平台认的 JSON 字段名不一样，而且不能三个字段一起输出。脚本里的注释写明了原因（`hooks/session-start:41-42`）：
+`hooks/session-start` 是个 bash 脚本：读出 `using-superpowers` 的全文，包进 `<EXTREMELY_IMPORTANT>` 标签，再输出成平台认的 JSON。难点在于三类平台认的字段名不同，而且不能三个都输出。脚本注释写明了原因（`hooks/session-start:41-42`）：
 
 ```bash
 # Claude Code reads BOTH additional_context and hookSpecificOutput without
 # deduplication, so we must emit only the field the current platform consumes.
 ```
 
-Claude Code 两个字段都读、而且不去重，同时输出就会把几千字的引导注入两遍。所以脚本按环境变量判断平台，只输出一种：
-
-```mermaid
-graph TB
-    A[session-start 脚本 读 using-superpowers 全文] --> B[判断当前平台 看环境变量]
-    B --> C[有 CURSOR_PLUGIN_ROOT]
-    B --> D[有 CLAUDE_PLUGIN_ROOT 且无 COPILOT_CLI]
-    B --> E[其他 Copilot 等]
-    C --> F[输出 additional_context 蛇形]
-    D --> G[输出 hookSpecificOutput.additionalContext 嵌套]
-    E --> H[输出 additionalContext 顶层 SDK 标准]
-```
-
-对应的代码在脚本末尾（`hooks/session-start:46-55`）：
+Claude Code 两个字段都读、而且不去重，都输出就会把几千字的引导注入两遍。所以脚本按环境变量判断平台，只输出一种（`hooks/session-start:46-55`）：
 
 ```bash
 if [ -n "${CURSOR_PLUGIN_ROOT:-}" ]; then
-  # Cursor 认 additional_context（snake_case）
+  # Cursor 认 additional_context
   printf '{\n  "additional_context": "%s"\n}\n' "$session_context"
 elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -z "${COPILOT_CLI:-}" ]; then
-  # Claude Code 认 hookSpecificOutput.additionalContext（嵌套）
+  # Claude Code 认 hookSpecificOutput.additionalContext
   printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "SessionStart",\n    "additionalContext": "%s"\n  }\n}\n' "$session_context"
 else
-  # Copilot CLI / 其他认 additionalContext（顶层，SDK 标准）
+  # Copilot CLI 等认顶层 additionalContext
   printf '{\n  "additionalContext": "%s"\n}\n' "$session_context"
 fi
 ```
 
-注册在 `hooks/hooks.json`，匹配 `startup|clear|compact` 三个时机，开机、清屏、压缩上下文后都重新注入一次：
+Cursor 也可能同时设置 `CLAUDE_PLUGIN_ROOT`，所以它的判断排在最前面。脚本用 `printf` 而不用 heredoc，注释里链着原因：bash 5.3 以上 heredoc 会卡住（`:44-45`，issue #571）。
 
-```json
-{ "hooks": { "SessionStart": [ {
-  "matcher": "startup|clear|compact",
-  "hooks": [ { "type": "command", "command": "... session-start" } ]
-} ] } }
-```
+hook 注册在 `hooks/hooks.json`，`matcher` 是 `startup|clear|compact`：开机、清屏、压缩上下文之后各注入一次。不是每条消息都注入，那样太费 token；但必须覆盖 `compact`，因为压缩可能把早先注入的引导挤掉。
 
-#### 4.4.4 取舍：注入全文 vs 按需 lazy load
+#### 引导层全文注入，能力层按需加载
 
-注意一个看似矛盾的选择：Superpowers 整体是 progressive disclosure（技能正文按需加载），但**引导技能 `using-superpowers` 是全文注入的**，不走 lazy load。为什么对它破例？因为它是"怎么用技能"的元说明，如果它也要按需加载，agent 就陷入死循环（要先知道怎么加载技能，才能加载"怎么加载技能"的技能）。bootstrap 必须 eager，其余才能 lazy。自举式系统都要做这个区分：**引导层 eager，能力层 lazy**。
+Superpowers 整体是按需加载，唯独 `using-superpowers` 全文注入。原因是它讲的就是“怎么加载技能”。如果它也要按需加载，agent 得先知道怎么加载技能，才能加载这份说明，就绕不出来了。所以引导层必须一开始就在，其余技能才能按需加载。自己设计注入系统时也要做这个区分。
 
-`matcher` 选 `startup|clear|compact` 也是细节。只在这三个时机注入，而不是每条消息都注入（那会浪费海量 token）；但要覆盖 `compact`，因为上下文压缩可能把早先注入的引导挤掉，得补一次。
+#### 最小注入脚本
 
-#### 4.4.5 自己写一个最小注入 hook
-
-如果你的 agent 平台支持 SessionStart 类 hook，一个最小注入脚本就几行：
+平台支持 SessionStart 类 hook 的话，最小脚本就几行：
 
 ```bash
 #!/usr/bin/env bash
-# 读引导内容
 BOOTSTRAP=$(cat "${PLUGIN_ROOT}/skills/using-yourtool/SKILL.md")
-# 转义成 JSON 字符串（换行、引号、反斜杠）
+# 用 json.dumps 转义换行、引号、反斜杠，再去掉两端引号
 escaped=$(printf '%s' "$BOOTSTRAP" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read())[1:-1])')
-# 按你的平台输出对应字段
 printf '{ "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalContext": "%s" } }\n' "$escaped"
 ```
 
-没有 hook 机制的平台，退一步用"把引导贴进 system prompt 的最前面"也行。核心是保证 bootstrap 在每次会话开始时一定在上下文里。
+这段跑过：引导文件里带引号、反斜杠和换行时，输出仍是合法 JSON。平台没有 hook 的话，就把引导贴在 system prompt 最前面，或者在自己的入口脚本里每次调用前注入。要保证的只有一点：每次会话开始时，引导一定在上下文里。
 
-## 5. 几个工程细节
+## 5. 规则的刚性与优先级
 
-读源码时记下的几个习惯：
-
-| 习惯 | 项目怎么做 | 可迁移到哪 |
+| 做法 | 项目怎么做 | 用在哪 |
 |---|---|---|
-| 决策用流程图固化 | 技能里嵌 graphviz `dot` 决策图（如 TDD 的 RED-GREEN-REFACTOR、技能触发流程），把"什么情况走哪条"画死，减少模型自由发挥 | 想让 agent 决策可复现的 prompt |
-| 区分 rigid / flexible | 技能自己声明是"必须照做"还是"按情境调整"，避免 agent 把 TDD 这种铁律也"灵活处理" | 给 agent 的规则要标明刚性等级 |
-| 用户指令永远最高优先级 | `using-superpowers` 明确：CLAUDE.md 说不用 TDD，就不用。技能只覆盖默认行为，不覆盖用户 | 注入式 agent 规范都该让位于用户显式指令 |
-| 注释里留踩坑链接 | `session-start` 里 `# Uses printf instead of heredoc to work around bash 5.3+ heredoc hang. See: issues/571` | 把"为什么这么写"的真实原因留在代码旁 |
+| 决策画成流程图 | 技能里嵌 graphviz 决策图，把什么情况走哪条路画死 | 想让 agent 的决策可复现 |
+| 标明刚性等级 | 技能声明自己是必须照做还是可按情境调整 | 防止 agent 把铁律也“灵活处理” |
+| 用户指令优先 | CLAUDE.md 说不用 TDD，就不用 | 所有注入式规范 |
 
-注入式规范天然有越权风险：它凭什么覆盖用户当下的要求？Superpowers 把优先级写死成"用户显式指令 > 技能 > 默认系统行为"，从机制上保证 agent 不会拿"我有 superpowers"当借口违抗你。
+第三条值得展开。注入式规范天然有越权风险：它凭什么覆盖用户当下的要求？`using-superpowers` 把优先级写死为“用户显式指令 > 技能 > 默认系统提示”，并举例说明 CLAUDE.md 说不用 TDD、技能说必须 TDD 时，听用户的（`skills/using-superpowers/SKILL.md:22-26`）。agent 不能拿技能当理由违抗用户。
 
-## 6. 适用边界与不该照搬的部分
-
-### 6.1 什么场景该用 / 不该用
+## 6. 什么时候用它
 
 | 场景 | 建议 | 原因 |
 |---|---|---|
-| 用 coding agent 做正经工程、怕它偷懒糊弄 | 适合 | 正是它的设计目标，纪律帮你兜住质量 |
-| 想给自己的 agent 产品装一套可插拔方法论 | 适合（学机制，未必照搬内容） | progressive disclosure + 对抗式 prompt 是通用手法 |
-| 一次性脚本、玩具 demo、探索性 spike | 不必 | brainstorm → spec → TDD 全流程是重纪律，小任务上是负担 |
-| 模型能力很弱的平台 | 谨慎 | 触发判断、长流程执行都依赖模型有足够的指令遵循能力 |
+| 用 coding agent 做正经工程，怕它糊弄 | 适合 | 正是它的设计目标 |
+| 给自己的 agent 产品装一套方法论 | 学机制，内容自己定 | 按需技能和先录借口是通用手法 |
+| 一次性脚本、探索性原型 | 不必 | brainstorm、spec、TDD 全流程在小任务上是负担 |
+| 指令遵循能力弱的模型 | 谨慎 | 触发判断和长流程都依赖模型听话 |
 
-这套方法论很重。它默认你愿意为质量牺牲速度：先聊需求、先写测试、每个任务过两道审查。对赶时间的小改动，它会显得碍事。Superpowers 自己也留了口子（`brainstorming` 技能有 "This Is Too Simple To Need A Design" 的反模式讨论，TDD 技能列了 throwaway prototype 等例外），但用之前要清楚它的定位是"长期、高质量、可自主"，不是"快"。
+这套方法论很重，默认你愿意为质量牺牲速度。Superpowers 自己也留了口子：`brainstorming` 讨论了“这太简单不需要设计”这种反模式（`skills/brainstorming/SKILL.md:16`），TDD 技能列了一次性原型等例外。
 
-### 6.2 哪些模式可以照搬、哪些不要
+照搬时要分清两层。**机制**可以直接拿走：按需技能、先录借口再写规则、子 agent 隔离加两段审查、引导层全文注入、用户指令优先。**内容**是 Jesse 的工程偏好，比如一定要 TDD、一定要先 brainstorm，换成你团队的规范（必须先写 RFC、必须过安全扫描），机制完全一样。全大写铁律的语气在当前一代模型上有效，模型升级后要重测。
 
-**可以照搬**：
+自己落地时，先别抄 14 个技能。先用 4.2 节的方法把你最在意的一条规则真正焊死，跑顺了再扩。技能库骨架一天能搭好，一条规则的 RED-GREEN 往往要跑十几个场景才收敛，时间应该花在这里。技能多了触发判断的负担也会涨，每加一个都要回归测一下别的技能有没有被带歪。
 
-- progressive disclosure（description 触发的技能文件）：给 agent 系统装能力。
-- 对抗式 prompt（先看 agent 怎么绕、再堵 loophole）：模型不照做规则的场景都适用。
-- bootstrap eager / 能力 lazy 的区分：自举式注入系统。
-- 用户指令 > 注入规范的优先级：注入式 agent 规范。
+## 7. 延伸阅读
 
-**不要照搬**：
-
-- 具体的方法论内容（一定要 TDD、一定要 brainstorm）。这是 Jesse 的工程偏好，不是普适真理。你该照搬的是**怎么把纪律焊进 agent 的机制**，而不是**他焊进去的那套纪律**。换成你团队的规范（必须先写 RFC、必须过安全扫描），机制完全一样。
-- 全大写 Iron Law 的语气强度。它在当前一代模型上有效，但过度依赖"吼"模型不是长久之计，模型升级后要重测有效性。
-
-## 7. 串起来落地时的三个判断
-
-四个模块各自的骨架在 4.1.6 / 4.2.6 / 4.3.6 / 4.4.5，按"技能库（4.1）→ 对抗式打磨（4.2）→ 冷启动注入（4.4）→ 按需加执行编排（4.3）"的顺序拼，一周能跑通一个迷你版。这里只补三个串起来时容易卡住、前面没讲的判断：
-
-- **平台没有 hook 怎么办**：很多 agent 平台没有 SessionStart 这种注入点。退化方案是把引导技能贴进 system prompt 最前面，或包一层自己的入口脚本在每次调用前注入。核心不变：保证 bootstrap 每次会话开始一定在上下文里。
-- **技能写几个合适**：别一上来抄 14 个。先用对抗式方法把你最在意的**那 1 个**规则真正焊死（体会"先看它怎么失败"的威力），跑顺了再扩。技能多了，触发判断的负担会涨，每加一个都要回归测一下别的技能有没有被带歪。
-- **对抗式打磨是花时间最多、回报最高的一步**：技能库骨架一天能搭好，但一条规则的 RED-GREEN 要反复跑十几个场景才收敛。预算要压在这里，而不是堆技能数量。
-
-## 8. 延伸阅读
-
-- [Anthropic 官方 skill 编写指南](https://docs.anthropic.com/en/docs/claude-code/skills)：和 Superpowers 对照看。官方要求 description 写"做什么 + 何时用"，Superpowers 只写触发时机，还加了一整套对抗借口的写法。
-- 《Claude Code Skill 开发指南》《Claude 插件官方指南》（本书作者另两册）：正面讲 skill / 插件机制本身，补上本章只当"标本"看的平台细节。
-- [obra 的博客](https://blog.fsck.com/) 与 Superpowers 仓库的 `docs/superpowers/plans/`、`specs/` 目录：作者把每次大改的设计文档都留在仓库里，是观察"对抗式 prompt 怎么迭代"的一手材料。
-- 想深入"为什么长 prompt 会失效"，搜 "lost in the middle" 相关论文，理解 progressive disclosure 的动机。
+- [Anthropic 官方 skill 文档](https://docs.anthropic.com/en/docs/claude-code/skills)：和 Superpowers 对照看。官方要求 description 写“做什么 + 何时用”，Superpowers 只写触发条件，还加了一整套对付借口的写法。
+- [obra 的博客](https://blog.fsck.com/) 和仓库里的 `docs/superpowers/plans/`、`specs/` 目录：作者把每次大改的设计文档都留在仓库里，可以看到这些 prompt 是怎么一版版改出来的。
+- “Lost in the Middle”（Liu et al., 2023）：长上下文中段信息被忽略的实验，是按需加载的动机。
