@@ -10,7 +10,7 @@ learning_objectives:
   - 能把长任务拆给每次全新的子 agent，并用两段独立审查和新鲜的验证证据把关
   - 能用 SessionStart 类 hook 在会话开始时注入引导内容，并用同一份内容适配多个 agent 平台
 feishu_url: "https://fivwvysqdz.feishu.cn/wiki/U4MqwytYPivkyAkW68ecYlR0nIg"
-last_synced: "2026-08-02"
+last_synced: "2026-09-26"
 ---
 
 ## 1. Superpowers

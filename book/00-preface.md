@@ -2,7 +2,7 @@
 title: 前言
 written_at: 2026-05-31
 feishu_url: "https://fivwvysqdz.feishu.cn/wiki/RcMKwBNnBiPLDFkIkHmcXLInnnh"
-last_synced: "2026-08-02"
+last_synced: "2026-09-26"
 ---
 
 ## 一个让我决定开始写这本书的下午

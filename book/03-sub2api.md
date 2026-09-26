@@ -9,7 +9,7 @@ learning_objectives:
   - 能写一个 HTTP 入、WebSocket 出的协议桥接 forwarder，把客户端的 HTTP/SSE 和上游的 WebSocket 桥起来，并在首字前缓冲非 token 事件，让上游早断时还能重试或干净地报错
   - 能给 OAuth token 池做并发安全的刷新：进程内锁 + 分布式锁 + 加锁后 DB 重读 + invalid_grant 竞争恢复，避免多副本重复消费同一 refresh token
 feishu_url: "https://fivwvysqdz.feishu.cn/wiki/CYwewUxRUiCf5jkQcHAcA7FhnTb"
-last_synced: "2026-08-02"
+last_synced: "2026-09-26"
 ---
 
 ## 1. sub2api

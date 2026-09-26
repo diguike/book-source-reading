@@ -10,7 +10,7 @@ learning_objectives:
   - 能用纯函数 reducer 把流式事件折叠成可渲染、可直接存盘的消息快照
   - 能用 copy-on-write 快照实现撤销 / 重做，并按“只为撤销而留着的字节”控制内存
 feishu_url: "https://fivwvysqdz.feishu.cn/wiki/KvpuwoPqDirEEykcbQxchbxDnUe"
-last_synced: "2026-08-02"
+last_synced: "2026-09-26"
 ---
 
 ## 1. LLM Space

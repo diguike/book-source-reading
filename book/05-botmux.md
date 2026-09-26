@@ -10,7 +10,7 @@ learning_objectives:
   - 能把一个不是自己写的程序的终端画面投影出去：无头 xterm 渲染成图片推送，再开一个按 token 区分读写的 Web 终端
   - 能在多人共用的机器人里把"能对话"和"能操作"做成两道独立的权限闸，并按交互性质选闸
 feishu_url: "https://fivwvysqdz.feishu.cn/wiki/VUoZwbg4GieiWRkKx5ncXsxsnee"
-last_synced: "2026-08-02"
+last_synced: "2026-09-26"
 ---
 
 ## 1. botmux

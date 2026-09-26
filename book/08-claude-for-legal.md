@@ -10,7 +10,7 @@ learning_objectives:
   - 能搭一条知识库自进化闭环：偏差日志触发提案、人工审 diff 后落库，而不是让模型直接改知识库
   - 能给多 Agent 编排做权限分层，并让第三方能力进环境前先过供应链门禁
 feishu_url: "https://fivwvysqdz.feishu.cn/wiki/UfB0wGLmpixdypkMSVtcQgQGnlc"
-last_synced: "2026-08-09"
+last_synced: "2026-09-26"
 ---
 
 ## 1. claude-for-legal

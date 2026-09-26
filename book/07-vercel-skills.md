@@ -11,7 +11,7 @@ learning_objectives:
   - 能用 .well-known 端点在内网自建分发源，并知道它在企业环境里真正会卡住的地方
   - 能用注册表加 CI 回写文档的方式，让一个要接海量社区 PR 的适配层不靠人肉维护
 feishu_url: "https://fivwvysqdz.feishu.cn/wiki/THjJwpJ4piHUm3kLIbPcdFJpnMb"
-last_synced: "2026-08-04"
+last_synced: "2026-09-26"
 ---
 
 ## 1. vercel-labs/skills

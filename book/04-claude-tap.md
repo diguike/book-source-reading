@@ -9,7 +9,7 @@ learning_objectives:
   - 能写一个边转发边累积的 SSE 重组器，把流式响应还原成可存盘的完整消息
   - 能用 frozen dataclass 策略表收拢 N 个外部 client 的适配差异，把特殊情况留给少量显式 helper
 feishu_url: "https://fivwvysqdz.feishu.cn/wiki/IviBwEZx1iGC7ykonSScjHupnJw"
-last_synced: "2026-08-02"
+last_synced: "2026-09-26"
 ---
 
 ## 1. claude-tap

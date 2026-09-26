@@ -18,6 +18,10 @@
 - [第 8 章　claude-for-legal：一个垂直行业的 AI 能力怎么组织](book/08-claude-for-legal.md)
 - [第 9 章　ATBClone：macOS 应用多开的身份改写与启动劫持](book/09-atbclone.md)
 
+## 附录
+
+- [附录 A　跨章模式索引](book/90-pattern-index.md)
+
 ## 收录候选(待写)
 
 下面是候选清单,未必都会写,顺序也未必按编号。

@@ -10,7 +10,7 @@ learning_objectives:
   - 能解释 macOS 应用身份、代码签名、entitlements 与 App Sandbox 的关系，并划清兼容性改造和安全隔离的边界
   - 能为带删除和提权能力的本地工具设计可信状态、路径约束、输入转义与失败回滚
 feishu_url: "https://fivwvysqdz.feishu.cn/wiki/BCQYwMfhciQASMkn1T4cl3K3nvh"
-last_synced: "2026-09-04"
+last_synced: "2026-09-26"
 ---
 
 ## 1. ATBClone

@@ -9,7 +9,7 @@ learning_objectives:
   - 能为一组有配额、会过期的远端凭证写一个控制平面：统一执行接口、按模型记冷却状态、按后端限流性质选调度策略
   - 能给长驻服务做文件驱动的热重载：防抖、内容哈希、原子替换检测，加上解析失败时保留旧配置
 feishu_url: "https://fivwvysqdz.feishu.cn/wiki/CyLiwwUsSikLVyk5xB2cncMXnub"
-last_synced: "2026-08-02"
+last_synced: "2026-09-26"
 ---
 
 ## 1. CLIProxyAPI
