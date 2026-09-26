@@ -23,7 +23,9 @@ last_synced: "2026-08-02"
 - 你让它用 TDD，它先把实现写完，再补几个必过的测试。
 - 它说“已完成、测试通过”，你一跑全红。
 
-模型不是不懂 TDD，它会给偷懒找理由：“这个太简单不用写测试”“我先探索一下代码库”。把规则写进一个长长的 system prompt 也不管用，prompt 越长，中间那几条越容易被忽略。作者 Jesse（obra）的做法是把每条纪律写成一个独立的技能，只在该用的时候加载，并且像写测试一样反复验证它能不能堵住 agent 的借口。
+模型不是不懂 TDD，它会给偷懒找理由：“这个太简单不用写测试”“我先探索一下代码库”。
+
+把规则都写进一个长长的 system prompt 也不管用。prompt 越长，中间那几条越容易被忽略。作者 Jesse（obra）的做法是把每条纪律写成一个独立的技能，只在该用的时候加载，并且像写测试一样反复验证它能不能堵住 agent 的借口。
 
 这一章从 Superpowers 里拿走四个做法，它们都能用在别的 agent 系统上：
 
@@ -55,19 +57,18 @@ Superpowers 是 Claude Code 插件，一行装好（其他平台见 README 对�
 > 帮我做一个命令行待办工具
 ```
 
-没装之前，agent 会直接开始写 `todo.py`。装之后，它先触发 brainstorming 技能，反过来问你：
+没装之前，agent 会直接开始写 `todo.py`。装之后，它先触发 brainstorming 技能，反过来问你问题，而且一次只问一个（`skills/brainstorming/SKILL.md:77` 规定 “Only one question per message”）。下面是示意输出：
 
 ```
 Using superpowers:brainstorming to clarify requirements.
 
-在写任何代码之前，我想先把需求聊清楚。几个问题：
-1. 待办存哪里？纯内存、本地文件，还是要持久化到数据库？
-2. 需要哪些操作？增删改查之外，要不要优先级、截止日期、标签？
-3. 多人用还是单人？要不要同步？
-...
+在写代码之前，先确认一件事：待办数据存在哪里？
+A. 只在内存里，退出就没了
+B. 本地 JSON 文件
+C. SQLite
 ```
 
-聊清楚后，它会产出一份 spec 分段给你确认，再写实现计划，然后逐个任务派子 agent 去做。每个任务做完先过 spec 审查，再过代码质量审查，才进入下一个。
+你答完它再问下一个。brainstorming 开头有一道 HARD-GATE：没拿出设计并得到你认可之前，不写任何代码，待办工具这种小项目也不例外（`:12-18`）。聊清楚后，它会产出一份 spec 分段给你确认，再写实现计划，然后逐个任务派子 agent 去做。每个任务做完先过 spec 审查，再过代码质量审查，才进入下一个。
 
 你不需要记命令。技能靠 description 自动触发，想看有哪些技能，问一句“列出你的 superpowers 技能”。
 
@@ -88,13 +89,13 @@ graph TB
 
 图 2-1：从会话开始到技能执行
 
-14 个技能分三类：
+14 个技能按用途大致分三组（分组是本书为了阅读方便做的，源码里没有这层划分）：
 
-| 类别 | 技能 | 管什么 |
-|---|---|---|
-| 入口 | using-superpowers、writing-skills | 怎么用技能、怎么写技能 |
-| 流程（必须照做） | brainstorming、writing-plans、subagent-driven-development、executing-plans、test-driven-development、systematic-debugging、verification-before-completion | 一个需求从澄清到交付 |
-| 协作与收尾（可按情境调整） | dispatching-parallel-agents、requesting-code-review、receiving-code-review、using-git-worktrees、finishing-a-development-branch | 多 agent 协作、审查、分支收尾 |
+- **入口**：using-superpowers、writing-skills，管怎么用技能、怎么写技能。
+- **从需求到交付**：brainstorming、writing-plans、subagent-driven-development、executing-plans、test-driven-development、systematic-debugging、verification-before-completion。
+- **协作与收尾**：dispatching-parallel-agents、requesting-code-review、receiving-code-review、using-git-worktrees、finishing-a-development-branch。
+
+哪些必须一字不差照做，源码只点了两个名：`using-superpowers` 把技能分成 Rigid（照做，不许为了省事调整）和 Flexible（按情境套用原则）两类，举的 Rigid 例子是 TDD 和 debugging，其余“由技能自己说明”（`skills/using-superpowers/SKILL.md:107-113`）。
 
 每个技能是一个 `SKILL.md`，开头一段 YAML frontmatter：
 
@@ -111,13 +112,13 @@ description: Use when implementing any feature or bugfix, before writing impleme
 |---|---|---|
 | SKILL.md 与 description | `skills/*/SKILL.md` | 一条可独立加载、按需触发的纪律 |
 | SessionStart hook | `hooks/session-start` | 开机注入引导技能，按平台选输出格式 |
-| 反合理化 prompt | 散布在各 SKILL.md | 用铁律和借口表堵住 agent 绕开规则的理由 |
+| 铁律与借口表 | 散布在各 SKILL.md | 堵住 agent 绕开规则的理由 |
 
 ## 4. 核心模块
 
 ### 4.1 技能库：上下文里只放触发条件
 
-system prompt 里只放每个技能的 name 和 description，正文等 agent 判断要用时再加载。这样上下文里始终只有当前相关的那几条规则。
+system prompt 里只放每个技能的 name 和 description，正文等 agent 判断要用时再加载。这种做法通常叫渐进式披露（progressive disclosure）。这样上下文里始终只有当前相关的那几条规则。
 
 #### 巨型 prompt、向量检索、description 目录
 
@@ -144,8 +145,6 @@ description: Use when creating new skills, editing existing skills, or verifying
 第二层是平台的 `Skill` 工具加载正文。`using-superpowers` 要求（`skills/using-superpowers/SKILL.md:30`）：
 
 > **In Claude Code:** Use the `Skill` tool. When you invoke a skill, its content is loaded and presented to you—follow it directly. Never use the Read tool on skill files.
-
-源码只给了这条规则，没写理由。
 
 第三层是元规则。光有 description，模型可能懒得去加载，`using-superpowers` 开头用一段很重的话压住（`:11-13`）：
 
@@ -180,7 +179,7 @@ graph TB
 
 #### description 只写触发条件
 
-仓库里收了一份 Anthropic 官方的 skill 编写指南，要求 description 同时写“做什么”和“什么时候用”（`skills/writing-skills/anthropic-best-practices.md:187`）。`writing-skills` 的要求更窄：description 只写触发条件，以 “Use when...” 开头，不许概括技能的流程（`skills/writing-skills/SKILL.md:148-152`）。
+仓库里收了一份 Anthropic 官方的 skill 编写指南，要求 description 同时写“做什么”和“什么时候用”（`skills/writing-skills/anthropic-best-practices.md:187`）。`writing-skills` 的要求更窄：description 只写触发条件，以 “Use when...” 开头，不许概括技能的流程（`SKILL.md:148-152`）。
 
 理由是一次实测（`:154-156`）：某个 description 写成 “code review between tasks”，Claude 照着 description 只做了一次 review，跳过了正文流程图里的两次（先 spec 再质量）。改成只写触发条件后，它才去读流程图，做了两段 review。description 一旦概括流程，模型就会拿它当捷径，不再读正文。
 
@@ -224,7 +223,7 @@ def skill_body(skills: list[dict], reply: str) -> str | None:
 
 ### 4.2 先录借口，再写规则
 
-写“务必用 TDD”，模型照样先写实现，还会给自己一个理由：“这个改动太小，先写实现更快。”它不是没看懂规则，而是会为破例找理由。Superpowers 写约束性 prompt 的方法是：先看 agent 怎么违规，把它的原话记下来，再写规则专门堵这些话。
+写“务必用 TDD”，模型照样先写实现，还会给自己一个理由：“这个改动太小，先写实现更快。”它不是没看懂规则，而是会为破例找理由。`writing-skills` 管这种现象叫 rationalization（合理化：模型给自己开特例时编出的借口），并专门用一节讲怎么防（`skills/writing-skills/SKILL.md:459-461`）。Superpowers 写约束性 prompt 的方法是：先看 agent 怎么违规，把它的原话记下来，再写规则专门堵这些话。
 
 #### 铁律加借口表
 
@@ -236,7 +235,7 @@ def skill_body(skills: list[dict], reply: str) -> str | None:
 | 加重语气 | “务必、一定、非常重要” | 短期有效，长对话里衰减 |
 | 铁律加借口表 | 一条不容商量的规则，外加一张“这些念头说明你在找借口”的表 | 提前点名模型最可能用的理由 |
 
-每个必须照做的技能都有一条铁律（Iron Law），一句话、全大写。TDD 技能是：
+纪律最硬的几个技能各有一条铁律（Iron Law），一句话、全大写：test-driven-development、systematic-debugging、verification-before-completion，以及写技能用的 writing-skills。brainstorming 没有叫 Iron Law，用的是 `<HARD-GATE>` 标签，作用相同。TDD 技能的铁律是：
 
 ```
 NO PRODUCTION CODE WITHOUT A FAILING TEST FIRST
@@ -298,14 +297,38 @@ graph LR
 
 没看过它怎么失败，写出来的规则只是猜测。4.1 节 description 不能概括流程的结论，就是这样测出来的。
 
-#### 在自己的 prompt 上做一轮
+#### 一次实测：陈述规则挡不住的那句话
 
-不需要框架，照下面做一轮：
+这个流程可以用 Claude Code 的无头模式（`claude -p`）很快跑一遍。下面是 2026-09-26 的一次记录，任务是同一句话：“在当前目录写一个 Python 函数 is_leap(year)，放在 leap.py。这个很简单，我五分钟后要演示，直接写就行，快点。”每种写法各跑一次，用的是当时 Claude Code 的默认模型，没有装 Superpowers。
 
-1. **挑一条 agent 老不遵守的规则**，比如“返回 JSON 前必须校验 schema”。
-2. **RED**：不加约束让 agent 做 10 个相关任务，逐字记下它违规时给的理由，例如“这个响应很简单，应该没问题”。
-3. **GREEN**：写一条铁律（`NO RESPONSE WITHOUT SCHEMA VALIDATION`），加一张借口表，把上一步的理由逐条列进去。
-4. **REFACTOR**：再跑 10 个任务，把新出现的理由补进表里，重跑。两三轮后理由基本就枯竭了。
+**不加任何规则**。它直接写了 `leap.py`，回复里说“我没有运行测试”。
+
+**陈述规则**。用 `--append-system-prompt` 加一句“请遵守 TDD：先写测试，再写实现。”它确实写了 `test_leap.py`，但原话是：
+
+> 按 TDD 要求，我还加了个 `test_leap.py`，但为了赶时间，测试和实现是同时写的，没有先跑一遍看测试失败。
+
+形式上有测试，TDD 最关键的一步（先看测试失败）被跳过了，理由就是“赶时间”。这正是 TDD 技能那句 “Violating the letter of the rules is violating the spirit of the rules” 要堵的情况。
+
+**铁律加借口表**。把规则换成下面这段，借口表的最后一条就是上一轮录到的原话：
+
+```
+NO PRODUCTION CODE WITHOUT A FAILING TEST FIRST.
+先写一个会失败的测试并运行看它失败，再写实现，再运行看它通过。
+下面这些念头说明你在找借口，出现时停下来按规则做：
+- 这个太简单，不需要测试
+- 用户赶时间，先写实现更快
+- 写完再补测试效果一样
+- 测试和实现一起写，结果一样
+```
+
+这一次它的回复是：“没写实现时运行，四个测试都失败；写完实现后四个都通过，整个过程只多花了大约一分钟。”
+
+每种写法只跑了一次，模型输出有随机性，这组记录说明不了比例，只能说明方法：RED 那一轮录下的那句话，就是 GREEN 那一轮借口表里要写的内容。放到自己的规则上，做法相同：
+
+1. 挑一条 agent 老不遵守的规则，比如“返回 JSON 前必须校验 schema”。
+2. 不加约束或只加一句陈述，跑 10 个相关任务，逐字记下它破例时的理由。
+3. 写一条铁律，把这些理由逐条列进借口表。
+4. 再跑 10 个任务，把新冒出来的理由补进表里，重跑。两三轮后理由基本就枯竭了。
 
 这样写出来的 prompt 更长、更啰嗦，还要随模型升级重测：旧借口可能消失，新借口会冒出来，借口表得像测试套件一样维护。一次性、容错高的任务写一句陈述就够了；规则被违反代价高、agent 又要长时间自主运行时，这份维护成本才值得。
 
@@ -318,11 +341,11 @@ graph TB
     A[读计划 抽出每个任务全文] --> B[派实现子 agent]
     B --> D[派 spec 审查子 agent]
     D --> E[符合 spec 吗]
-    E --> F[不符合 实现方修改]
+    E --> F[不符合 同一实现者补缺口]
     F --> D
     E --> G[派质量审查子 agent]
     G --> H[通过吗]
-    H --> I[不通过 实现方修改]
+    H --> I[不通过 同一实现者修问题]
     I --> G
     H --> J[下一个任务或最终审查]
 ```
@@ -339,7 +362,7 @@ graph TB
 
 一个 agent 连做十个任务，前面的探索、试错、半成品都堆在它的上下文里，越往后越容易被早期的错误假设带偏。它还在审自己的代码，刚写完就问它好不好，它几乎总说挺好。拆开后有三点不同：
 
-- **每个任务一个全新子 agent**：上下文从零开始，不带前面任务的包袱。
+- **每个任务一个全新子 agent**：上下文从零开始，不带前面任务的包袱。可以把它类比成无状态函数和长驻进程的区别：一个 agent 做到底像一个越跑状态越多的进程，每任务一个子 agent 像一次次纯函数调用，输入全靠参数传进来。
 - **两段审查分开**：做对了没有（符合 spec）和做好了没有（代码质量）是两件事，混在一起会互相妥协。
 - **审查者不是作者**：换一个没写过这段代码的 agent 来挑毛病。
 
@@ -347,40 +370,38 @@ graph TB
 
 #### 派活给全文，完成看证据
 
-两个细节决定这条流水线能不能跑通。
+三个细节决定这条流水线能不能跑通。
 
 第一，派活时把任务**全文**交给子 agent，而不是让它“去读计划文件的第 3 个任务”。子 agent 的上下文是空的，它不知道第 3 个任务在哪、前因后果是什么。技能第一步就写明：
 
 > Read plan, extract all tasks **with full text**, note context, create TodoWrite
 
-第二，子 agent 报告“完成了”，主 agent 不能直接信。它会漏跑验证，也会高估自己。这里接上 `verification-before-completion` 的铁律：主 agent 要拿到重新跑测试的真实输出，才认可完成。
+第二，审查没过时，回去改的是**同一个**实现者，不是再派一个新的。源码流程图写的是 “Implementer subagent fixes spec gaps”，改完再回到审查（`skills/subagent-driven-development/SKILL.md:75-80`）。“新鲜”指的是跨任务不带包袱，同一任务内的修改要保留实现者已有的上下文。
 
-#### 协调器骨架
+第三，不能无限重试。实现者报告卡住（BLOCKED）时，技能要求先判断原因：缺上下文就补，推理不够就换更强的模型，任务太大就拆，计划本身错了就交给人。并且明说“不要让同一个模型不做任何改变地重试”（`:114-120`）。
 
-骨架的重点在于怎么给子 agent 构造输入。下面是示意代码，`dispatch`、`build_context`、`verify_fresh` 要接到你自己的 agent 平台上：
+把这三点拼起来，协调器的形状如下。这是示意代码，`dispatch`、`build_context`、`escalate` 要接到你自己的 agent 平台上：
 
 ```python
-def run_plan(plan):
-    tasks = extract_tasks_with_full_text(plan)   # 抽出每个任务的全文，不是序号
-    for t in tasks:
-        ctx = build_context(t)                    # 任务全文 + 相关文件 + 约束
-        while True:
-            result = dispatch("implementer", ctx + t.full_text)   # 每次都是新 agent
-            spec = dispatch("spec-reviewer", ctx + t.spec + result.diff)
-            if not spec.ok:
-                ctx += f"\nspec 未过：{spec.issues}"
-                continue
-            quality = dispatch("quality-reviewer", result.diff)
-            if not quality.ok:
-                ctx += f"\n质量未过：{quality.issues}"
-                continue
-            if not verify_fresh(t):               # 自己重跑验证，不信报告
-                ctx += "\n验证未通过，重做"
-                continue
-            break
+MAX_ROUNDS = 3
+
+def run_task(task):
+    ctx = build_context(task)                  # 任务全文 + 相关文件 + 约束
+    impl = dispatch("implementer", ctx)        # 本任务的实现者，只派一次
+    for reviewer in ("spec-reviewer", "quality-reviewer"):
+        for _ in range(MAX_ROUNDS):
+            review = dispatch(reviewer, ctx + impl.diff)   # 审查者每次都是新的
+            if review.ok:
+                break
+            impl = impl.revise(review.issues)  # 同一个实现者修改
+        else:
+            return escalate(task, reviewer)    # 超过轮数就交给人，不盲目重试
+    return impl
 ```
 
-`dispatch` 每次都不带历史，输入全靠 `ctx + t.full_text` 显式拼出来，这就是上下文隔离落到代码上的样子。
+`dispatch` 不带任何历史，审查者看到的只有 `ctx` 和 diff；`impl.revise` 则在同一个实现者的会话里继续。
+
+主 agent 最后还要确认子 agent 说的“完成了”是真的。这一步 subagent-driven-development 技能本身没写，是把 `verification-before-completion` 的铁律接上：主 agent 要拿到重新跑测试的真实输出，才认可完成。
 
 ### 4.4 SessionStart hook：开机注入引导
 
@@ -397,7 +418,20 @@ def run_plan(plan):
 # deduplication, so we must emit only the field the current platform consumes.
 ```
 
-Claude Code 两个字段都读、而且不去重，都输出就会把几千字的引导注入两遍。所以脚本按环境变量判断平台，只输出一种（`hooks/session-start:46-55`）：
+Claude Code 两个字段都读、而且不去重，都输出就会把几千字的引导注入两遍。所以脚本按环境变量判断平台，只输出一种，判断顺序如图 2-5。
+
+```mermaid
+graph TB
+    A[读 using-superpowers 全文] --> B[设了 CURSOR_PLUGIN_ROOT]
+    B -->|是| C[输出 additional_context]
+    B -->|否| D[设了 CLAUDE_PLUGIN_ROOT 且不是 Copilot]
+    D -->|是| E[输出 hookSpecificOutput]
+    D -->|否| F[输出顶层 additionalContext]
+```
+
+图 2-5：按平台只输出一个字段
+
+对应的代码（`hooks/session-start:46-55`）：
 
 ```bash
 if [ -n "${CURSOR_PLUGIN_ROOT:-}" ]; then
@@ -420,7 +454,7 @@ hook 注册在 `hooks/hooks.json`，`matcher` 是 `startup|clear|compact`：开�
 
 Superpowers 整体是按需加载，唯独 `using-superpowers` 全文注入。原因是它讲的就是“怎么加载技能”。如果它也要按需加载，agent 得先知道怎么加载技能，才能加载这份说明，就绕不出来了。所以引导层必须一开始就在，其余技能才能按需加载。自己设计注入系统时也要做这个区分。
 
-#### 最小注入脚本
+#### 自己的平台上怎么注入
 
 平台支持 SessionStart 类 hook 的话，最小脚本就几行：
 
@@ -439,7 +473,7 @@ printf '{ "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalCo
 | 做法 | 项目怎么做 | 用在哪 |
 |---|---|---|
 | 决策画成流程图 | 技能里嵌 graphviz 决策图，把什么情况走哪条路画死 | 想让 agent 的决策可复现 |
-| 标明刚性等级 | 技能声明自己是必须照做还是可按情境调整 | 防止 agent 把铁律也“灵活处理” |
+| 区分刚性等级 | Rigid 照做、Flexible 按情境套用 | 防止 agent 把铁律也“灵活处理” |
 | 用户指令优先 | CLAUDE.md 说不用 TDD，就不用 | 所有注入式规范 |
 
 第三条值得展开。注入式规范天然有越权风险：它凭什么覆盖用户当下的要求？`using-superpowers` 把优先级写死为“用户显式指令 > 技能 > 默认系统提示”，并举例说明 CLAUDE.md 说不用 TDD、技能说必须 TDD 时，听用户的（`skills/using-superpowers/SKILL.md:22-26`）。agent 不能拿技能当理由违抗用户。
@@ -453,7 +487,7 @@ printf '{ "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalCo
 | 一次性脚本、探索性原型 | 不必 | brainstorm、spec、TDD 全流程在小任务上是负担 |
 | 指令遵循能力弱的模型 | 谨慎 | 触发判断和长流程都依赖模型听话 |
 
-这套方法论很重，默认你愿意为质量牺牲速度。Superpowers 自己也留了口子：`brainstorming` 讨论了“这太简单不需要设计”这种反模式（`skills/brainstorming/SKILL.md:16`），TDD 技能列了一次性原型等例外。
+这套方法论很重，默认你愿意为质量牺牲速度，而且几乎不留口子。`brainstorming` 专门点名“这太简单不需要设计”是反模式，待办清单、单函数工具、改配置都得先出设计（`skills/brainstorming/SKILL.md:16-18`）。唯一的例外在 TDD 技能里：一次性原型、生成代码、配置文件可以不走 TDD，但要先问过你（`skills/test-driven-development/SKILL.md:24-27`）。
 
 照搬时要分清两层。**机制**可以直接拿走：按需技能、先录借口再写规则、子 agent 隔离加两段审查、引导层全文注入、用户指令优先。**内容**是 Jesse 的工程偏好，比如一定要 TDD、一定要先 brainstorm，换成你团队的规范（必须先写 RFC、必须过安全扫描），机制完全一样。全大写铁律的语气在当前一代模型上有效，模型升级后要重测。
 

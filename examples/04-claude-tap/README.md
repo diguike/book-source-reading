@@ -1,6 +1,6 @@
 # 第 4 章配套示例：claude-tap 的三个模式
 
-三个文件各对应正文 4.1、4.2、4.3 节，互相独立，都在 Python 3.11 下跑过。
+`mini_tap.py`、`mini_sse.py`、`mini_strategy_table.py` 各对应正文 4.1、4.2、4.3 节；`mini_recorder.py` 对应第 7 节的前两步，用到 `mini_sse.py`。都在 Python 3.11 下跑过。
 
 ```bash
 python3.11 -m venv .venv && . .venv/bin/activate
@@ -44,3 +44,12 @@ python mini_strategy_table.py
 ```
 
 只打印解析出的环境变量，不真正启动 CLI。要真的拉起 child，在自己的代码里调 `run("claude", port, args)`。
+
+## mini_recorder.py：包一层就能录的记录器
+
+```bash
+python mini_recorder.py --out trace.jsonl -- claude
+# 上游默认 https://api.anthropic.com，用 --target 换
+```
+
+在系统挑的空闲端口起反向代理，把 `ANTHROPIC_BASE_URL` 指向自己再拉起 child。每个请求写一行 JSONL：请求头（`authorization` / `x-api-key` 只留前 12 个字符）、请求体、状态码、耗时，以及响应。流式响应边转发边用 `mini_sse` 累积，存下的是完整消息。child 退出后记录器随之退出。

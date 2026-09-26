@@ -6,7 +6,7 @@ based_on_commit: 1d24e82a
 written_at: 2026-06-25
 learning_objectives:
   - 能用"接口 + 静态注册表"把几条独立变化的轴（接哪种 CLI、跑在哪种终端、对接哪个 IM）各自隔离，新增一种只改局部
-  - 能让编排进程随时重启而不杀死它管理的长生命周期子进程：子进程托管在 tmux 里常驻，重启只恢复元数据，等下一条请求再接管
+  - 能让编排进程随时重启而不杀死它管理的长生命周期子进程：子进程托管在 tmux 里常驻，重启后逐个探测，存活的分批重新接管，拿不准的留着不关
   - 能把一个不是自己写的程序的终端画面投影出去：无头 xterm 渲染成图片推送，再开一个按 token 区分读写的 Web 终端
   - 能在多人共用的机器人里把"能对话"和"能操作"做成两道独立的权限闸，并按交互性质选闸
 feishu_url: "https://fivwvysqdz.feishu.cn/wiki/VUoZwbg4GieiWRkKx5ncXsxsnee"
@@ -24,7 +24,7 @@ last_synced: "2026-08-02"
 把这件事做出来，要解决四个问题，对应本章的四个模块：
 
 1. **三根变化轴各自隔离**。接 7 种以上 CLI、3 种终端后端，还可能换 IM。每一种差异做成一个接口加一张注册表，核心逻辑不受污染。
-2. **编排进程重启，子进程不死**。CLI 托管在 tmux 里常驻，daemon 重启只读回元数据，等下一条消息再重新接管。
+2. **编排进程重启，子进程不死**。CLI 托管在 tmux 里常驻，daemon 重启后逐个探测，存活的分批重新接管。
 3. **把终端画面投到手机上**。CLI 是全屏重绘的 TUI 程序，项目用无头 xterm 把它渲染成图片推送，另开一个 Web 终端，读和写按 token 分开。
 4. **对话和操作分成两道闸**。能跟机器人说话的人，不一定能让它改工作目录，也不一定能替它在终端里按键。
 
@@ -160,7 +160,7 @@ Claude Code 的就绪信号是一个 SessionStart hook；Codex 有自己的消�
 | 插件式，运行时发现和加载（像 ESLint plugin） | 要维护插件协议、版本兼容、加载顺序，对自用工具过重 |
 | 编译期接口 + 静态注册表，一种实现一个文件 | 加新实现要改注册表那一个文件 |
 
-botmux 选第二种。另有一条路线是 OpenClaw 这类用 Agent SDK 重建 agent 能力，它不桥接 CLI，换一种 CLI 等于重写。
+botmux 选第二种。
 
 三根轴在代码里是这样落地的（图 5-3）：
 
@@ -280,7 +280,7 @@ daemon 经常重启：改了代码要 `botmux restart`，升级也要重启。�
 
 所以要同时做到两件事：daemon 重启时 CLI 进程继续活着；daemon 起来后能找回有哪些会话、各自跑到哪、卡片在哪条消息上。
 
-#### 三种保活办法
+#### 保活交给谁
 
 | 做法 | 问题 |
 |---|---|
@@ -290,53 +290,25 @@ daemon 经常重启：改了代码要 `botmux restart`，升级也要重启。�
 
 botmux 以第三种为主路径，第一种兜底：有 tmux 时进程真常驻、热重连；没有时退到 `PtyBackend` 加 `--resume` 冷恢复。
 
-tmux-resurrect、mosh 这类工具也在做终端保活，但它们面向人：手动 attach、断线重连。botmux 要的是程序化地观察和写入，所以用的是 `pipe-pane`、`send-keys` 这类适合程序驱动的接口。
+tmux-resurrect、mosh 这类工具也在做终端保活，但它们面向人：手动 attach、断线重连。botmux 要的是程序化地观察和写入，用的是 `pipe-pane`、`send-keys`、`capture-pane` 这类适合程序驱动的命令。
 
-#### tmux session 是真身，pty 只是观察窗
+#### 编排进程不持有终端
 
-tmux 会话名由 sessionId 推出来（`src/adapters/backend/tmux-backend.ts:70`）：
+tmux 会话名由会话 id 推出来，不用另存映射表：
 
 ```ts
+// src/adapters/backend/tmux-backend.ts:70
 static sessionName(sessionId: string): string {
   return `bmx-${sessionId.slice(0, 8)}`;
 }
 ```
 
-启动时先探测同名 session 在不在，决定新建还是重连（`tmux-backend.ts:205` 一带）：
+worker 启动时，后端选择器先探测同名 session 在不在（`session-backend-selector.ts:58-73`）。两种情况用的都是 `TmuxPipeBackend`：
 
-```ts
-this.reattaching = TmuxBackend.hasSession(this.sessionName);
-if (this.reattaching) {
-  // CLI 还在跑，这个 node-pty 只是 attach 上去看
-  this.process = pty.spawn('tmux', ['attach-session', '-t', this.sessionName], opts);
-} else {
-  // 新建 session，用 shell 包一层把 CLI 跑进去（实参有精简）
-  this.process = pty.spawn('tmux',
-    ['new-session', '-s', this.sessionName, '--', shell, '-c', script, bin, ...args], opts);
-}
-```
+- **不在**：`tmux new-session -d` 建一个 detached session，把 CLI 跑进去（`tmux-pipe-backend.ts:564`）。
+- **在**：说明 CLI 还活着，什么都不重建，直接挂上观察。
 
-完整版还要传 `-x` / `-y` 定死终端尺寸，以及每个 bot 的环境变量赋值（`tmux-backend.ts:235` 一带）。
-
-这段代码的要点：worker 手里的 node-pty 句柄只是一扇观察窗，tmux session 才是真身。可以把 tmux session 想成一间一直亮着灯、有人在干活的房间，worker 是趴在窗外看的人，看的人走了，屋里照样干活。
-
-```mermaid
-graph TB
-    W[worker 的 pty 可随时换] --> S[tmux session 一直在]
-    S --> C[CLI 进程一直跑]
-    R[botmux restart 只换 worker] --> S
-    M[下条消息 新 worker 重新 attach] --> S
-```
-
-图 5-4：重启只换掉观察窗
-
-所以 `botmux restart` 不打断任何会话：daemon 和 worker 全换一遍，CLI 一个没死。只有 `/close` 才真正结束 tmux session。
-
-命名还用来区分状态。CLI 启动失败时，botmux 把现场改名成 `bmx-diag-<id>` 留着排查（`tmux-backend.ts:82`）。如果失败的 pane 继续叫 `bmx-<id>`，下次探测会以为 CLI 还活着，重连上去才发现是个空 shell。
-
-#### 旁路观察和 fifo 反压
-
-生产上用的其实是 `TmuxPipeBackend`，连 attach 都不做，而是旁路观察（`tmux-pipe-backend.ts:9` 的注释）：
+观察的方式写在文件头注释里（`tmux-pipe-backend.ts:9`）：
 
 ```
 - mkfifo 建一个唯一的 fifo
@@ -345,27 +317,62 @@ graph TB
 - 写入走 tmux send-keys / paste-buffer，capture-pane 取当前屏
 ```
 
-不直接 attach，是因为 `/adopt` 接管用户自己的 tmux 时，用户那边可能正开着 iTerm2 的 `-CC` 控制模式客户端，再 attach 一个会让画面错乱。`pipe-pane` 对 tmux 来说是零侵入的单向观察。
+worker 自始至终不 attach 这个 session，手里也没有 CLI 的终端。可以把 tmux session 想成一间一直亮着灯、有人在干活的房间，worker 只是在墙上接了一根监听线。worker 走了，线断了，屋里照样干活；新 worker 来了，重新接一根就行。
 
-fifo 有一个通用的坑：读端跟不上，写端 `cat > fifo` 就会阻塞，反压回 tmux，把 pane 里 CLI 的输出也卡住。botmux 用一个一直在读的 `createReadStream`，加一个处理多字节字符跨 64KB 边界的流式解码器。自己仿的时候守住一条：fifo 的读端必须一直读，读出来的数据别在主路径上做重活。
+```mermaid
+graph TB
+    W[worker 可随时换] --> P[pipe-pane 监听线]
+    P --> S[tmux session 一直在]
+    S --> C[CLI 进程一直跑]
+    R[botmux restart 只换 worker] --> S
+    M[新 worker 重新挂 pipe-pane] --> S
+```
 
-`/adopt` 能接管一个不是 botmux 起的 CLI，比如你在 iTerm2 里开到一半的 `claude`。难点在认出 pane 里跑的是哪种 CLI：Linux 上读 `/proc/<pid>/cmdline`，macOS 退到 `ps`，再按进程名映射到 `CliId`（`src/core/session-discovery.ts`）。zellij 不暴露 pane 的 pid，只能按 `(cliId, cwd)` 两边匹配；匹配到 0 个或多于 1 个进程都不接（`zellij-adopt-discovery.ts`）。在猜外部状态时，没把握就不接。
+图 5-4：重启只换掉监听线
 
-#### 重启后先恢复元数据
+所以 `botmux restart` 不打断任何会话：daemon 和 worker 全换一遍，CLI 一个没死。只有 `/close` 才真正结束 tmux session。仓库里还留着一个用 `attach-session` 的 `TmuxBackend`，现在只有它的命名、探测等静态方法还在被复用，选择器已经不再创建它。
 
-daemon 重启后，`restoreActiveSessions()`（`session-manager.ts:695`）从磁盘读出所有活跃会话，分三种处理：
+不 attach 还有一个原因：`/adopt` 接管用户自己的 tmux 时，用户那边可能正开着 iTerm2 的 `-CC` 控制模式客户端，再 attach 一个会让画面错乱。`pipe-pane` 对 tmux 来说是零侵入的单向观察。
 
-- **adopt 会话**：先确认外部 pane 还活着，再重连。
-- **排队中的会话**：只登记，不拉起 CLI（`:787`）。注释里标明它不能走通用恢复分支，否则下一条消息会去 `--resume` 一个根本不存在的 CLI 会话。
-- **有历史的活跃会话**：建好会话对象，worker 留空，等下一条消息来了才 fork（`:830`）。
+命名也用来区分状态。CLI 启动失败时，botmux 把现场改名成 `bmx-diag-<id>` 留着排查（`tmux-backend.ts:82`）。失败的 pane 如果还叫 `bmx-<id>`，下次探测会以为 CLI 还活着，挂上去才发现是个空 shell。
 
-最后一条省下了大量资源：重启后哪怕有 50 个历史会话，也不会一上来拉起 50 个 worker。
+fifo 有一个通用的坑：读端不读，写端 `cat > fifo` 就会阻塞，反压回 tmux，把 pane 里 CLI 的输出也卡住。botmux 的处理有两点：
 
-会话状态落在 `~/.botmux/sessions-<larkAppId>.json`，写入走临时文件加 `renameSync` 原子替换；要写的内容和磁盘上一样就跳过（`session-store.ts:110`）。处理一条消息会触发好几次 `updateSession`，这一步挡掉了大部分重复写盘。
+- 用 `O_RDWR` 打开 fifo，自己同时持有读写两端，谁先 open 都不会卡在等对方。
+- 用一个一直在读的 `createReadStream`，加一个处理多字节字符跨 64KB 边界的解码器。
+
+自己仿的时候守住一条：fifo 的读端必须一直读，读出来的数据别在主路径上做重活。
+
+`/adopt` 能接管一个不是 botmux 起的 CLI，比如你在 iTerm2 里开到一半的 `claude`。难点在认出 pane 里跑的是哪种 CLI：Linux 上读 `/proc/<pid>/cmdline`，macOS 退到 `ps`，再按进程名映射到 `CliId`（`src/core/session-discovery.ts`）。zellij 不暴露 pane 的 pid，只能按 `(cliId, cwd)` 两边匹配，匹配到 0 个或多于 1 个进程都不接。
+
+#### 重启后逐个探测，拿不准就不关
+
+daemon 重启后，`restoreActiveSessions()`（`session-manager.ts:695`）从磁盘读出所有活跃会话。adopt 会话先确认外部 pane 还活着；排队中、从没起过 CLI 的会话只登记，绝不能走通用恢复分支，否则下一条消息会去 `--resume` 一个不存在的 CLI 会话。
+
+其余会话按后端分两种。pty 后端没有东西可重连，只建好会话对象，等下一条消息来了再冷恢复。tmux、zellij、herdr 这类常驻后端则逐个探测，结果分成这几种（`session-manager.ts:876-944`）：
+
+| 探测结果 | 处理 |
+|---|---|
+| 在，CLI 配置没变 | 排队，稍后重新接管 |
+| 在，但 bot 已经换了 CLI | 杀掉旧 session；重连会让旧 CLI 复活 |
+| 不在，会话被计数回收过 | 留着，下一条消息冷恢复 |
+| 不在，整个 tmux server 都不在 | 多半是宿主机重启，留着，下一条消息冷恢复 |
+| 不在，server 还在 | 只有它没了，当僵尸关掉 |
+| 探测失败或超时 | 不下结论，留着 |
+
+“不在”要分三种看，是踩过坑的结果。源码注释记着：早先把 server 整体不在也当僵尸处理，一次宿主机重启就把整个 dashboard 的会话全关了。探测失败同理，一次瞬时超时不能换来永久关闭。
+
+排队的会话由 `staggeredRecoveryFork`（`session-manager.ts:680`）分批重新 fork worker，默认 5 个一批、间隔 250ms，几十个会话存活时不会一起拉起。已经被真实消息提前唤醒的会话会跳过，免得把正在跑的 worker 杀掉重来。
+
+`examples/05-botmux/keeper.ts` 是这一套的最小实现：detached 启动、原子落盘、分类、分批接管，在真实 tmux 上跑过。
+
+会话状态落在 `~/.botmux/sessions-<larkAppId>.json`，写入走临时文件加 `renameSync` 原子替换；内容和磁盘上一样就跳过（`session-store.ts:110`）。处理一条消息会触发好几次 `updateSession`，这一步挡掉了大部分重复写盘。
 
 #### 从黑盒输出判断空闲
 
-会话数量靠计数回收，不靠超时。`idle-worker-sweeper.ts:13` 给每个 bot 设 `maxLiveWorkers`（默认 30），超了就挑最久没活动、而且处于空闲的会话挂起：worker 退出，tmux 里的 CLI 保留，下次消息来了再恢复。它不打断进行中的轮次；按空闲 N 分钟回收的做法，会误杀正在思考、暂时没输出的 agent。
+会话数量靠计数回收，不靠超时。`idle-worker-sweeper.ts:13` 给每个 bot 设 `maxLiveWorkers`（默认 30），超了就挑最久没活动、而且处于空闲的会话挂起。它不打断进行中的轮次；按空闲 N 分钟回收的做法，会误杀正在思考、暂时没输出的 agent。
+
+挂起会连 tmux session 和里面的 CLI 一起销毁，因为占内存的是 CLI，只退 worker 等于没回收（`worker.ts:5458-5476`）。daemon 给这个会话打上 `suspendedColdResume` 标记（`worker-pool.ts:1105-1106`），下一条消息来了用 `--resume` 从磁盘记录冷恢复；上面那张表里“被计数回收过”的那一行，认的就是这个标记。sweeper 文件头的注释还写着 CLI 会在后台继续跑，那是旧行为，读源码时以 worker 里的实现为准。
 
 问题是 CLI 不会报告自己忙不忙，botmux 只能从 PTY 输出反推（`idle-detector.ts`），三条判据叠加：
 
@@ -402,7 +409,7 @@ Claude Code 这类 CLI 是 TUI 程序（全屏终端界面，靠光标控制序�
 | 录成 asciinema 事后回放 | 不是实时，IM 里也放不了播放器 |
 | 无头渲染成图片，定时推送 | 要自己处理字体，还要控制推送频率，别打爆 IM 接口 |
 
-botmux 用第三种做卡片，再加一个 ttyd 式的 Web 终端（把终端通过 WebSocket 暴露成网页），两者共享同一个 PTY 数据源。依赖只有 `@xterm/headless`、`@napi-rs/canvas`、`node-pty`、`ws` 四个，没有 puppeteer、sharp、electron。
+botmux 用第三种做卡片，再加一个 ttyd 式的 Web 终端（把终端通过 WebSocket 暴露成网页），两者共享同一个 PTY 数据源。依赖只有 `@xterm/headless`、`@napi-rs/canvas`、`node-pty`、`ws` 四个，没有 puppeteer、sharp、electron。不用 headless 浏览器截图，是因为要画的是一张规整的等宽网格，逐格画比拉起一个 Chromium 轻，也更可控；要渲染的是任意 HTML，结论就反过来。
 
 #### 字体链的顺序
 
@@ -422,7 +429,7 @@ botmux 用第三种做卡片，再加一个 ttyd 式的 Web 终端（把终端�
 
 字体从哪来也要管。候选路径第一位是 `~/.botmux/fonts/`（`screenshot-renderer.ts:48`），`botmux setup` 会把 Noto CJK、JetBrains Mono 下载到这里；每一档都列了 Linux 和 macOS 的候选路径，逐个尝试注册。要在陌生服务器上出图的工具，得把渲染资源缺失当成常态处理。
 
-#### 10 秒一帧，三道闸削请求
+#### 10 秒一帧，三步削减请求
 
 worker 用一个 10 秒定时器截图（`src/worker.ts:2429`）。从 CLI 输出到手机刷新的管线如图 5-5：
 
@@ -438,7 +445,7 @@ graph LR
 
 图 5-5：截图推送管线
 
-三道闸依次削掉多余请求：
+三步依次削掉多余请求：
 
 - **节流**：10 秒一帧。用户点了卡片按钮，会在 1 秒后补一张，给即时反馈。
 - **去重**：PNG 的 MD5 和上一张相同就不上传。
@@ -454,7 +461,7 @@ graph LR
 
 **卡片键盘按钮**。截图模式下卡片底部有一排按键（`card-builder.ts:776`）：Esc、Ctrl+C、方向键、翻页。点击后 `card-handler.ts:1683` 把 `{ type: 'term_action', key }` 发给 worker，worker 转成 ANSI 字节写进 PTY。
 
-**Web 终端**。worker 内嵌一个单页 HTML（`worker.ts` 4817 行起），前端是 xterm.js，通过 WebSocket 连回 worker。可写链接带 `?token=<writeToken>`，握手校验通过的连接才能写；只读连接只放行鼠标滚轮序列，让你能翻屏看历史。
+**Web 终端**。worker 内嵌一个单页 HTML（`worker.ts` 4817 行起），前端是 xterm.js，通过 WebSocket 连回 worker。可写链接带 `?token=<writeToken>`，握手校验通过的连接才能写；只读连接只放行鼠标滚轮序列，让你能翻屏看历史。一个源广播给所有连接、写回按 token 放行，这一套的最小实现在 `examples/05-botmux/web-term.ts`。
 
 ```mermaid
 sequenceDiagram
@@ -509,7 +516,7 @@ for (let r = 0; r < rows; r++) {
 
 ### 4.4 对话闸和操作闸
 
-两个纯函数就是两道闸：`canTalk` 管能不能跟机器人说话，`canOperate` 管能不能让它改工作目录、跑管理命令。`canOperate` 的实现里不读任何只授予对话权限的名单。
+两个纯函数就是两道闸：`canTalk` 管能不能跟机器人说话，`canOperate` 管能不能让它改工作目录、跑管理命令。`canOperate` 放行时只认 `allowedUsers` 和同部署的兄弟 bot，对话授权名单只用来判断当前是不是 open 模式。
 
 #### 为什么只分两档
 
@@ -537,38 +544,67 @@ graph TB
 
 图 5-7：按意图选闸
 
-`canTalk` 背后的 `evaluateTalk`（`event-dispatcher.ts:847`）依次检查：在 `allowedUsers` 里、是 oncall 群成员、是同部署的兄弟 bot、没配白名单（open 模式）、命中 `chatGrants` / `globalGrants` 这类只授对话权的名单，任一命中就放行。
+`canTalk` 背后的 `evaluateTalk`（`event-dispatcher.ts:847`）按顺序检查，任一命中就放行：
 
-`canOperate`（`:881`）的区别在于不读后两类名单：
+1. 在 `allowedUsers` 里（owner）。
+2. 是 oncall 群成员。oncall 群是 owner 用 `/oncall bind` 绑定到一个工作目录的群，群里的人发消息就在那个目录起会话。
+3. 是同部署的兄弟 bot。
+4. 消息来自 `allowedChatGroups` 里的群。
+5. 没配任何名单，也就是 open 模式。
+6. 命中 `chatGrants` 或 `globalGrants` 这类只授对话权的名单。
+
+`canOperate` 短得多：
 
 ```ts
+// src/im/lark/event-dispatcher.ts:837-841、:881-897（有删节）
+function hasConfiguredAllowlist(bot): boolean {
+  return (bot.config.allowedUsers?.length ?? 0) > 0
+    || (bot.config.allowedChatGroups?.length ?? 0) > 0
+    || (bot.config.globalGrants?.length ?? 0) > 0;
+}
+
 export function canOperate(larkAppId, _chatId, senderOpenId): boolean {
   const bot = getBot(larkAppId);
-  if (isKnownPeerBot(config.session.dataDir, larkAppId, senderOpenId)) return true; // 同部署 bot 互信
-  const allowedUsers = bot.resolvedAllowedUsers;
-  if (!hasConfiguredAllowlist(bot)) return true;     // open 模式：人人都是 owner
-  return !!senderOpenId && allowedUsers.includes(senderOpenId);
+  if (isKnownPeerBot(config.session.dataDir, larkAppId, senderOpenId)) return true;
+  if (!hasConfiguredAllowlist(bot)) return true;      // open 模式
+  return !!senderOpenId && bot.resolvedAllowedUsers.includes(senderOpenId);
 }
 ```
 
-源码注释说明这是 PR #46 堵的洞：只授对话权的名单绝不能通过 `canOperate` 漏成操作权。
+对话授权名单在这里只出现在 `hasConfiguredAllowlist` 里，不参与放行。它必须出现，这就是源码注释里说的 PR #46 堵的洞：一个 bot 如果只配了 `globalGrants`，判断时不把它算进名单，就会被当成 open 模式，`canOperate` 对所有人放行，对话授权就漏成了操作权。
+
+还有一个细节：判断有没有名单用的是原始配置，不是解析后的 `resolvedAllowedUsers`。owner 配了邮箱但启动时解析失败，解析结果是空的；拿它判断会误入 open 模式，变成谁都能操作。用原始配置判断，解析失败时就是谁都放不进来，由 owner 去修配置。
 
 | 身份 | 怎么识别 | 对话 | 操作 |
 |---|---|---|---|
 | Owner 与共同 owner | 在 `allowedUsers` 里 | 能 | 能 |
 | 同部署兄弟 bot | `isKnownPeerBot()` | 能 | 能 |
-| Oncall 群成员、被 grant 的人或 bot | `findOncallChat` / `chatGrants` | 能 | 不能 |
+| Oncall 群成员、授权群成员、被 grant 的人或 bot | oncall 绑定、授权群、grant 名单 | 能 | 不能 |
 | 没被 grant 的外部 bot | 未登记 | 不能 | 不能 |
 
 `/grant @bot` 只写进 `chatGrants`，碰不到 `allowedUsers`；`/grant`、`/revoke` 本身只有 owner 能执行。
 
 open 模式是危险的默认值：没配白名单时 `canOperate` 直接放行，谁进群谁就能改工作目录，`/grant` 也变成空操作。注释把它标成“没有信任根”的状态。生产部署一定要配 `allowedUsers`。
 
+#### 身份、角色、权限是三件事
+
+权限判定以飞书的 open_id 为主体，但 open_id 是一串不可读的字符，卡片和日志里要显示成人名。`identity-cache.ts` 按成本从低到高解析，能用便宜的就不调贵的：
+
+1. **@ 消息自带的名字**：飞书的 mention 载荷里本来就有 `(name, open_id)`，直接收下（`:147`）。
+2. **消息事件的发送者信息**：自带 open_id 和类型，顺手记进缓存。
+3. **通讯录 API**：前两档都没命中才调（`:215`）。应用没开通讯录权限时，飞书返回 `99991672`，代码记下“这个应用没这项权限”，之后直接显示 open_id，不再每条消息撞一次（`:229`）。
+
+角色是另一回事。`role-resolver.ts` 按 `roles/<appId>/<chatId>.md` 给 CLI 注入人设，比如 coder、reviewer。一个人可以被设成 reviewer 角色，却根本不在 `allowedUsers` 里。你是谁、扮演什么、能干什么，分成三套机制，互不借用。
+
 #### agent 提问走对话闸，终端按键走操作闸
 
 agent 干到一半常会停下来问人：两个方案选哪个，要不要连测试一起改。Claude Code 里这是 `AskUserQuestion` 工具。人不在终端前，问题得搬到飞书上，这是 ask-broker 的活。
 
-它拦的不是工具权限审批。botmux 默认给 Claude Code 带 `--dangerously-skip-permissions`，并在进程级 `--settings` 里设 `defaultMode: 'bypassPermissions'`（`src/adapters/cli/claude-code.ts:502-523`），默认配置下 CLI 根本不会弹“是否允许执行”。botmux 挂的是一个 `PreToolUse` hook，只认 `tool_name === 'AskUserQuestion'`，其他工具在解析阶段就返回 `null`（`src/core/ask-hook/claude-code.ts:69-70`）。选 `PreToolUse` 而不是 `PermissionRequest`，是因为 bypass 模式下 `AskUserQuestion` 不经过权限请求（`src/adapters/hook-installer.ts:142-144` 的注释）。
+它拦的不是工具权限审批：
+
+- botmux 默认给 Claude Code 带 `--dangerously-skip-permissions`，并在进程级 `--settings` 里设 `defaultMode: 'bypassPermissions'`，默认配置下 CLI 根本不会弹“是否允许执行”（`src/adapters/cli/claude-code.ts:502-523`）。
+- 它挂的 `PreToolUse` hook 只认 `tool_name === 'AskUserQuestion'`，其他工具在解析阶段就返回 `null`（`src/core/ask-hook/claude-code.ts:69-70`）。
+- 选 `PreToolUse` 而不是 `PermissionRequest`，是因为 bypass 模式下 `AskUserQuestion` 不经过权限请求（`src/adapters/hook-installer.ts:142-144` 的注释）。
 
 ```mermaid
 sequenceDiagram
@@ -617,35 +653,46 @@ Web 终端和 Dashboard 在浏览器里打开，没有飞书身份可认，改�
 - **Dashboard token**：`botmux dashboard` 生成并落盘（`dashboard.ts:99`），重启后旧链接仍可用，再跑一次命令才轮换。
 - **Dashboard 调 daemon 要签名**：请求头里带用 `~/.botmux/.dashboard-secret` 对“时间戳:nonce”算的 HMAC-SHA256（`dashboard.ts:202`）。本机进程知道 daemon 的端口，不代表它能读到这份 secret；在多用户机器上，能连上本地端口不等于有权操作。
 
-两道闸的最小实现：
+两道闸的最小实现（完整版和测试在 `examples/05-botmux/gates.ts`）：
 
 ```ts
 interface BotPerm {
-  allowedUsers: string[];   // 能对话，也能操作
-  talkGrants: string[];     // 只能对话
-  peerBots: Set<string>;    // 同部署的兄弟 bot，两样都能
+  allowedUsers: string[];      // owner：能对话，也能操作
+  allowedChatGroups: string[]; // 这些群里的人：只能对话
+  talkGrants: string[];        // 被 grant 的人或 bot：只能对话
+  peerBots: Set<string>;       // 同部署的兄弟 bot：两样都能
 }
 
-const noAllowlist = (p: BotPerm) => p.allowedUsers.length === 0 && p.talkGrants.length === 0;
+const restricted = (p: BotPerm) =>   // talk 名单只在这里出现
+  p.allowedUsers.length + p.allowedChatGroups.length + p.talkGrants.length > 0;
 
-function canTalk(p: BotPerm, who: string): boolean {
+function canTalk(p: BotPerm, who: string, chatId?: string): boolean {
   if (p.allowedUsers.includes(who) || p.peerBots.has(who)) return true;
-  if (noAllowlist(p)) return true;
+  if (chatId && p.allowedChatGroups.includes(chatId)) return true;
+  if (!restricted(p)) return true;                      // open 模式
   return p.talkGrants.includes(who);
 }
 
-// 操作闸：实现里不能出现 talkGrants
 function canOperate(p: BotPerm, who: string): boolean {
   if (p.peerBots.has(who)) return true;
-  if (noAllowlist(p)) return true;
-  return p.allowedUsers.includes(who);
+  if (!restricted(p)) return true;                      // open 模式
+  return p.allowedUsers.includes(who);                  // 放行只认 owner
 }
-
-const OPERATE_CMDS = new Set(['/repo', '/cd', '/relay', '/config']);
-const gateFor = (cmd: string) => (OPERATE_CMDS.has(cmd) ? canOperate : canTalk);
 ```
 
-这段在 Bun 下跑过，也过了 `tsc --strict`：只被 grant 对话权的人能聊天、不能 `/repo`；兄弟 bot 两样都能；没配白名单时全部放行。回答 agent 提问直接复用 `canTalk`。
+这段在 Bun 下跑过，也过了 `tsc --strict`。只配了 `talkGrants` 时，被 grant 的人能聊天、不能 `/repo`，陌生人两样都不行，不会退化成全开放；oncall 群成员只能对话；兄弟 bot 两样都能。回答 agent 提问直接复用 `canTalk`。
+
+#### 让群成员支使 agent：读放开，写收口
+
+oncall 群里人人都能让 agent 干活，就得防着它改坏真实文件。`sandbox.ts` 的模型是读全部放开、写全部隔离：
+
+- **读**：不拦。agent 看得到整个真实文件系统，CLI 的配置、认证、项目代码原样可用，CLI 照常工作。
+- **写**：改动落到一层 overlayfs（联合挂载，把改动层叠在只读的底层之上）的会话专属 upper 目录，真实文件永远不动。只有被改过的文件会复制进 upper，不用先 clone 一份项目。
+- **落地**：任务做完，再把 upper 里的改动集合回真实项目。
+
+实现上，`buildSandboxArgs`（`sandbox.ts:151`）拼出的 bwrap 命令先用 `--ro-bind / /` 把整个根目录挂成只读，再把 overlay 合并后的目录绑进来盖住工作区。想藏起来的敏感文件，每个 bot 配 `sandboxHidePaths`，用空文件只读挂载盖掉。Linux 上是 bubblewrap 加 overlayfs，macOS 走 Anthropic 的 sandbox-exec 方案。
+
+读写都关进沙箱，CLI 连自己的配置都读不到，得一样样挂进去；只管写，实现简单得多，又正好对准要防的事：让 agent 能干活，但别毁现场。
 
 ## 5. 其他值得搬走的做法
 
@@ -653,7 +700,7 @@ const gateFor = (cmd: string) => (OPERATE_CMDS.has(cmd) ? canOperate : canTalk);
 |---|---|---|
 | 进程间消息定义成判别联合，收端穷尽 `switch` | `src/types.ts` | 进程或线程间通信，改个类型编译器就报出漏处理的分支 |
 | 从稳定 id 推出句柄名，不存映射表 | `bmx-<前 8 位>` | 跨进程共享句柄 |
-| 重启时只恢复元数据，进程等首个请求再起 | `session-manager.ts` | 冷启动要恢复很多资源 |
+| 重启后先分类，存活的分批接管，拿不准的不关 | `session-manager.ts` | 重启时要接管大量外部资源 |
 | 在途时新内容排队，只留最新一份 | 卡片 PATCH | 高频本地状态推给限流的远端 API |
 | 重启时不给每个会话补发卡片，owner 收一条私聊汇总 | `restart-report.ts` | 运维动作对终端用户无感 |
 | 外部接口确认无权限就停止重试，降级显示 | `identity-cache.ts:229` | 依赖可能没开权限的第三方 API |
@@ -675,7 +722,7 @@ const gateFor = (cmd: string) => (OPERATE_CMDS.has(cmd) ? canOperate : canTalk);
 
 - **面向公网的多租户服务**。`bots.json` 明文存 AppSecret 和第三方 key，open 模式默认全放行，每会话一个进程在大规模下很吃资源。
 - **只要一个聊天机器人**。botmux 的重量都在终端投影和进程编排上。
-- **agent 能力是自研的**。botmux 的前提是有一个值得桥接的现成 CLI；没有这个前提，要看 OpenClaw 那类基于 SDK 的方案。
+- **agent 能力是自研的**。botmux 的前提是有一个值得桥接的现成 CLI；没有这个前提，要看 OpenClaw 那类用 Agent SDK 重建 agent 能力的方案。代价反过来：它不桥接 CLI，换一种 CLI 等于重写。
 
 不要照搬的几处：
 
@@ -691,12 +738,15 @@ const gateFor = (cmd: string) => (OPERATE_CMDS.has(cmd) ? canOperate : canTalk);
 |---|---|---|
 | 1（2-3 天） | IM 消息 → node-pty 启动 `claude` → 输出去掉转义后回发文本 | IM 和 CLI 的最小回路 |
 | 2（3-4 天） | 换成 4.3 节的截图管线：10 秒定时 + 去重 + 上传，重点调字体链 | 手机上能看终端 |
-| 3（3-4 天） | 每会话一个 worker，IPC 只要 init / message / close；后端换 tmux，加惰性恢复 | 多会话常驻，随时重启 |
-| 4（2-3 天） | xterm.js + ws 的 Web 终端，token 分读写；接上两道闸 | 完整遥控和分权 |
+| 3（3-4 天） | 每会话一个 worker，IPC 只要 init / message / close；后端换 detached tmux，重启分类恢复（参考 `examples/05-botmux/keeper.ts`） | 多会话常驻，随时重启 |
+| 4（2-3 天） | xterm.js 的 Web 终端，token 分读写（`web-term.ts`）；接上两道闸（`gates.ts`） | 完整遥控和分权 |
 
 定时任务、dashboard、多 bot 协作、`/adopt`、zellij 都可以先砍掉，对理解四个核心做法没有增量。
 
-最容易漏的是 tmux session 的清理。`/close` 时要 `tmux kill-session`；daemon 异常重启后扫一遍 `bmx-*`，清掉对不上活跃会话的（botmux 用 `reapOrphanWorkers` 做这件事）。不做这一步，跑久了机器上会挂着几十个孤儿 session。
+最容易漏的是清理，孤儿有两类：
+
+- **tmux session**：`/close` 时要 `tmux kill-session`。自己实现时，启动后再扫一遍 `demo-*` 这类前缀，清掉对不上任何活跃会话的。
+- **worker 进程**：daemon 被硬杀时来不及收尾，worker 会被 init 接管，之后再也找不到。botmux 启动时用 `reapOrphanWorkers`（`worker-pool.ts:2834`）清理，只杀同时满足两条的进程：父进程是 init，命令行指向本安装的 worker 脚本。注释里记着一次事故：攒下了 841 个孤儿 worker，约 65 GB 内存。
 
 ## 8. 延伸阅读
 

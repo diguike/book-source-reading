@@ -22,7 +22,7 @@ last_synced: "2026-08-02"
 - 写个评测脚本批量调模型，脚本里是 `openai.OpenAI(base_url=...)`；
 - 几个人轮着用一份团队订阅。
 
-中间隔着两层差异。一是凭证：三家都走 OAuth，但登录流程和落盘格式各不相同，Claude 的凭证在 `~/.claude/.credentials.json`，Codex 存 `access_token` 加 `account_id`，Gemini 走浏览器回调。二是协议：客户端讲 OpenAI 协议，后端讲 Anthropic 或 Gemini 协议。CLIProxyAPI 在中间做三件事：翻译协议、挑一个可用账号、给过期的 token 续期。
+中间隔着两层差异。一是凭证：三家都走 OAuth，但登录流程和凭证字段各不相同。CLIProxyAPI 自己走一遍各家的登录，把拿到的 token 存进自己的凭证目录，比如 Codex 的凭证比 Claude 多一个 `account_id`（`internal/auth/codex/token.go:26`）。二是协议：客户端讲 OpenAI 协议，后端讲 Anthropic 或 Gemini 协议。CLIProxyAPI 在中间做三件事：翻译协议、挑一个可用账号、给过期的 token 续期。
 
 这三件事离开这个项目同样常见，也是本章要讲的三块：
 
@@ -37,23 +37,23 @@ cd _references
 git clone --depth 1 --branch v7.1.32 https://github.com/router-for-me/CLIProxyAPI.git
 ```
 
-路径都从仓库根算起。项目用 Go 写，约 4 万行。本文基于 tag `v7.1.32`（commit `3a54fb7`）。
+路径都从仓库根算起。项目用 Go 写，不含测试约 11 万行，本章讲的三块加起来约 2.5 万行。本文基于 tag `v7.1.32`（commit `3a54fb7`）。
 
 ## 2. 5 分钟跑起来
 
-先建一个目录放配置和凭证：
+二进制从 [release 页](https://github.com/router-for-me/CLIProxyAPI/releases) 下载，解压后的可执行文件叫 `cli-proxy-api`（`.goreleaser.yml:16`）。先准备配置：
 
 ```bash
-mkdir -p ~/cli-proxy/auth
-cp config.example.yaml ~/cli-proxy/config.yaml   # 仓库里的模板
+mkdir -p ~/cli-proxy
+cp config.example.yaml ~/cli-proxy/config.yaml   # release 包和仓库里都有这份模板
 ```
 
-登录是一组 `--xxx-login` 子命令，会拉起浏览器走标准 OAuth，回调把凭证写进 `auth-dir`：
+登录是一组 `--xxx-login` 开关，会拉起浏览器走 OAuth，回调把凭证写进配置里的 `auth-dir`。不带 `--config` 时程序读当前目录下的 `config.yaml`（`cmd/server/main.go:452`），所以每条命令都带上它：
 
 ```bash
-./cli-proxy-api --claude-login        # Claude
-./cli-proxy-api --codex-login         # Codex
-./cli-proxy-api --login               # Gemini / Google
+./cli-proxy-api --config ~/cli-proxy/config.yaml --claude-login   # Claude
+./cli-proxy-api --config ~/cli-proxy/config.yaml --codex-login    # Codex
+./cli-proxy-api --config ~/cli-proxy/config.yaml --login          # Gemini / Google
 ```
 
 全部登录开关在 `cmd/server/main.go:82-90`，另有 `--antigravity-login`、`--kimi-login`、`--xai-login`，每个对应 `internal/auth/` 下一个目录。
@@ -62,18 +62,26 @@ cp config.example.yaml ~/cli-proxy/config.yaml   # 仓库里的模板
 
 ```yaml
 port: 8317
-auth-dir: "~/.cli-proxy-api"     # 登录后的凭证存这里
+auth-dir: "~/.cli-proxy-api"     # 登录后的凭证存这里，模板默认值
 api-keys:                         # 客户端调用本代理用的 key，自己定
   - "sk-local-whatever"
-remote-management:
-  secret-key: ""                  # 管理 API 的 key，留空则关闭
+routing:
+  strategy: "round-robin"         # 默认值；改成 fill-first 即切换策略，见 4.2
 ```
 
 起服务：
 
 ```bash
 ./cli-proxy-api --config ~/cli-proxy/config.yaml
-# 或 docker run -p 8317:8317 -v ~/cli-proxy:/app eceasy/cli-proxy-api:latest
+```
+
+用 Docker 时，镜像的工作目录是 `/CLIProxyAPI`，凭证目录在容器里是 `/root/.cli-proxy-api`，照仓库里 `docker-compose.yml` 的挂载方式：
+
+```bash
+docker run -p 8317:8317 \
+  -v ~/cli-proxy/config.yaml:/CLIProxyAPI/config.yaml \
+  -v ~/.cli-proxy-api:/root/.cli-proxy-api \
+  eceasy/cli-proxy-api:latest
 ```
 
 然后用任意 OpenAI SDK 调它，后端走的是你的 Claude 订阅：
@@ -88,7 +96,15 @@ resp = client.chat.completions.create(
 print(resp.choices[0].message.content)
 ```
 
-入站协议由路径决定。`internal/api/server.go:386-416` 注册了四组入口：`/v1/chat/completions`（OpenAI）、`/v1/messages`（Anthropic）、`/v1/responses`（Codex Responses）、`/v1beta/models/*`（Gemini）；`:431` 还有一个给 Gemini CLI 用的 `/v1internal:method`。同一份后端凭证，这几种客户端都能调。
+入站协议由路径决定（`internal/api/server.go:386-431`）：
+
+- `/v1/chat/completions`：OpenAI
+- `/v1/messages`：Anthropic
+- `/v1/responses`：Codex Responses
+- `/v1beta/models/*`：Gemini
+- `/v1internal:method`：Gemini CLI
+
+同一份后端凭证，这几种客户端都能调。
 
 ## 3. 全景架构
 
@@ -115,7 +131,7 @@ sequenceDiagram
 
 | 区块 | 位置 | 规模 | 职责 |
 |---|---|---|---|
-| 协议翻译 | `internal/translator/` | 约 1.5 万行，27 个翻译对子 | 5 种入站 × 6 种出站，按需注册 |
+| 协议翻译 | `internal/translator/` | 约 1.8 万行，27 个翻译对子 | 5 种入站 × 6 种出站，按需注册 |
 | 凭证池 | `sdk/cliproxy/auth/` | `conductor.go` 单文件 4455 行 | 选、执行、冷却、续期、持久化 |
 | 热重载 | `internal/watcher/` | 约 1100 行 | 监听配置和凭证目录 |
 | HTTP 入口 | `internal/api/` | 基于 Gin | 路由、鉴权、handler |
@@ -125,7 +141,7 @@ sequenceDiagram
 
 | 抽象 | 位置 | 职责 |
 |---|---|---|
-| `translator.Registry` | `sdk/translator/registry.go:128` | 全局翻译注册表 |
+| `translator.Registry` | `sdk/translator/registry.go:13` | 全局翻译注册表 |
 | `auth.Manager` | `sdk/cliproxy/auth/conductor.go` | 凭证池控制平面（类型叫 Manager，文件叫 conductor） |
 | `ProviderExecutor` | `sdk/cliproxy/auth/conductor.go:32` | 每个后端要实现的 6 方法接口 |
 | `Watcher` | `internal/watcher/watcher.go:32` | 监听文件变化，触发重载 |
@@ -140,7 +156,7 @@ CLIProxyAPI 没有定义统一的中间格式，而是为每个方向写一个�
 
 OpenAI 的 `tool_calls`、Anthropic 的 `tool_use`、Gemini 的 `function_call`、Codex Responses 的 `output_item`，说的都是“模型要调工具”，字段名、嵌套结构、流式切分却都不一样。单独翻一对不难，难在三件事叠在一起：
 
-- **对子多**：按 v7.1.32 的目录，入站 5 种、出站 6 种，实际注册了 27 个翻译对子。
+- **对子多**：入站 5 种、出站 6 种，理论上 30 对，实际注册了 27 对。少的 3 对里，两对是同协议直通（Claude 到 Claude、Gemini CLI 到 Gemini CLI），另一对是 Gemini CLI 客户端调 Antigravity 后端。新增一种客户端协议，就要给 6 个后端各补一对。
 - **字段一直在加**：OpenAI 加 `reasoning_effort`，Anthropic 加 `thinking.budget_tokens`，Codex 加新的 `output_item` 类型。
 - **流式切分粒度不同**：Anthropic 是 `content_block_start`、若干 `content_block_delta`、`content_block_stop` 组成的块结构，OpenAI 是一条扁平的 `delta` 流。这不只是改字段名。
 
@@ -156,7 +172,7 @@ OpenAI 的 `tool_calls`、Anthropic 的 `tool_use`、Gemini 的 `function_call`�
 
 LiteLLM 走的是第一条，以 OpenAI 的 `ModelResponse` 为中间格式。每个 provider 的 `transformation.py`（如 `litellm/llms/anthropic/chat/transformation.py`）都要把自己映射到它。OpenAI 格式表达不了的东西，比如 Anthropic 的块级流式和 `cache_control` 的语义，只能塞进扩展字段。
 
-CLIProxyAPI 选了第三条。它面对的协议都是别人定义的，隔几周就变一次；中间格式省下来的翻译器数量，会被“中间格式永远在追新字段”吃回去。N×M 的代码量没有消失，但每次改动都落在一个新目录里。
+CLIProxyAPI 选了第三条。它面对的协议都是别人定义的，隔几周就变一次；中间格式省下来的翻译器数量，会被“中间格式永远在追新字段”吃回去。N×M 的代码量没有消失，但每次改动都落在一个新目录里。项目的发版节奏也说明了这一点：到 2026 年 9 月下旬已有 858 个 release，最近三周就发了 30 个。
 
 #### 注册表加 init()：新增方向不碰旧代码
 
@@ -211,7 +227,7 @@ import (
 
 #### 不建结构体，在原始 JSON 上改
 
-以 Claude 请求转 OpenAI 请求为例（`internal/translator/openai/claude/openai_claude_request.go:23`）：
+以 Claude 请求转 OpenAI 请求为例（`internal/translator/openai/claude/openai_claude_request.go:21`）：
 
 ```go
 func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream bool) []byte {
@@ -291,7 +307,13 @@ CLIProxyAPI 让每种后端实现同一个 6 方法接口，Manager 只管选谁
 
 单个 OAuth 凭证已经够麻烦：会过期要续期，有配额会用完。再乘上多种后端、每种多个账号、每个账号对不同模型的状态又不同，情况就多了：一个 Claude 账号 sonnet 用满了，haiku 还能用；另一个账号配额暂时用完，但 token 还有效，不需要续期，只要等。这些状态如果写成请求路径上的 if/else，很快就没人敢改了。
 
-one-api、new-api 这类网关用的是 channel 模型：每个上游凭证是一条 channel，带权重，加权轮询，失败就禁用。这套办法成熟，面向计费，但调度本身不记状态，不感知“5 小时滚动窗口”这种有状态的限额。另一种极端是每个后端各写一套轮询和续期，行为很快就不一致了。
+常见的做法有三种：
+
+| 做法 | 代价 |
+|---|---|
+| channel 模型（one-api、new-api）：每个凭证一条 channel，加权轮询，失败禁用 | 调度不记状态，感知不到“5 小时滚动窗口”这类限额 |
+| 每个后端各写一套轮询和续期 | 各后端行为很快就不一致 |
+| 统一执行接口 + 中心 Manager（CLIProxyAPI） | Manager 成了单点，状态机全压在 `conductor.go` 一个 4455 行的文件里 |
 
 #### ProviderExecutor：后端的脏活关在实现里
 
@@ -310,6 +332,8 @@ type ProviderExecutor interface {
 
 Manager 不需要知道 Claude 的 OAuth 怎么续期、Codex 的 token 长什么样，只关心能不能从这个 executor 拿到响应、失败时能不能调 `Refresh` 救回来。
 
+`Refresh` 由谁来调，也收在 Manager 里：一个后台循环（`sdk/cliproxy/auth/auto_refresh_loop.go`）按 `NextRefreshAfter` 把凭证放进最小堆，到期的推进 channel，默认 16 个 worker（`conductor.go:75` 的 `refreshMaxConcurrency`）取出来调 `Refresh`。并发数固定，账号再多也不会同时发起一大批续期请求。
+
 #### Auth 结构里的三处分离
 
 Manager 和 executor 之间传递的是 `Auth`（`sdk/cliproxy/auth/types.go:47`）：
@@ -320,8 +344,8 @@ type Auth struct {
     Status           Status                 // 生命周期状态
     Disabled         bool                   // 操作员主动禁用
     Unavailable      bool                   // 配额用完等临时不可用
-    Attributes       map[string]string      // 不变配置，如 account_id，改了要写盘
-    Metadata         map[string]any         // 运行时数据，如 token、过期时间
+    Attributes       map[string]string      // 给 executor 用的只读配置，如文件路径、email
+    Metadata         map[string]any         // 可变的 token、过期时间，落盘写的就是它
     NextRefreshAfter time.Time              // 续期退避时间
     NextRetryAfter   time.Time              // 执行失败退避时间
     ModelStates      map[string]*ModelState // 按模型记的状态
@@ -330,11 +354,17 @@ type Auth struct {
 
 有三组字段刻意分开：
 
-- **`Attributes` 和 `Metadata`**：不变配置和运行时状态分开，只有前者改了才需要落盘。
+- **`Attributes` 和 `Metadata`**：凭证文件落盘的内容就是 `Metadata`（`sdk/auth/filestore.go:85-87`），token 续期后写回它。`Attributes` 是加载文件时推出来的索引，只有 `path` 和 `email` 两项（`filestore.go:250-259`），给 executor 读，不写回。
 - **`Disabled` 和 `Unavailable`**：一个是操作员的意图，一个是临时状态，恢复方式完全不同，不能合成一个 bool。
 - **`ModelStates`**：账号不是整体可用或不可用，sonnet 在冷却时 haiku 可能还能用。
 
-`Status` 是整个凭证的生命周期（`status.go:8-18`，正常运行见到的是 active、pending、refreshing、error、disabled）。某个模型此刻能不能用，是调度器按模型维护的另一套状态（`scheduler.go:27-30`），流转如图 1-3：
+这里有三套状态，各管一层：
+
+- `Auth.Status`：整个凭证的生命周期，如 active、refreshing、disabled（`status.go:8-18`）。
+- `ModelStates`：这个凭证在每个模型上的运行记录，如下次可重试时间。
+- 调度状态：调度器根据前两者，给每个“凭证加模型”算出一个结论，能不能选（`scheduler.go:27-30`）。
+
+最后这一层的流转如图 1-3：
 
 ```mermaid
 stateDiagram-v2
@@ -362,7 +392,9 @@ type modelCooldownError struct {
 
 #### round-robin 和 fill-first：看后端限流有没有状态
 
-调度器内置两种策略，另可自定义（`scheduler.go:18-20`）。默认是 round-robin（`config.example.yaml:119`），fill-first 改一行配置就能切换。fill-first 为什么存在，写在注释里（`selector.go:33-36`）：
+调度分两层。`Selector` 是挑选策略的接口，只有一个 `Pick` 方法（`conductor.go:120`）；`authScheduler` 按“后端加模型”分片维护上面那套调度状态（`scheduler.go:34`）。内置的两种策略由 scheduler 直接实现，自定义的 Selector 则由 Manager 把可用凭证列表交给它的 `Pick`（`conductor.go:703`、`:3069`）。
+
+默认策略是 round-robin，在配置里写 `routing.strategy: fill-first` 就能切换（`config.example.yaml:118-119`）。fill-first 为什么存在，写在注释里（`selector.go:33-36`）：
 
 ```go
 // FillFirstSelector selects the first available credential (deterministic ordering).
@@ -378,59 +410,35 @@ type FillFirstSelector struct{}
 
 配置里还有一个默认关闭的 `session-affinity` 开关（`config.example.yaml:125`，实现在 `selector.go:437`）：同一会话尽量落到同一个凭证，凭证不可用时自动换。多账号调度里的会话粘性是另一个大话题，本书第 3 章 sub2api 专门讲。
 
-#### 后台续期：最小堆加 16 个 worker
-
-凭证过期是异步事件，由一个后台循环处理（`sdk/cliproxy/auth/auto_refresh_loop.go`）：按 `NextRefreshAfter` 把凭证放进最小堆，主循环按时间出堆，把到期的凭证推进 channel，默认 16 个 worker（`conductor.go:75` 的 `refreshMaxConcurrency`）取出来调 `Refresh`。堆操作是 O(log n)，并发数固定，账号再多也不会同时发起一大批续期请求。
-
-#### 自己写一个凭证池
-
-统一接口、按模型冷却、fill-first 顺序：
+两种策略放在一起，差别只在 `pick` 的最后一行。下面摘自配套代码 `examples/01-cliproxyapi/cred_pool.py`，完整版还有 401 续期和自测：
 
 ```python
-import time
-from dataclasses import dataclass, field
-from typing import Callable
-
-class QuotaError(Exception):              # 后端返回 429，带上还要多久恢复
-    def __init__(self, reset_in: float):
-        super().__init__(f"quota exceeded, reset in {reset_in}s")
-        self.reset_in = reset_in
-
-class AuthExpired(Exception):             # 后端返回 401
-    pass
-
-@dataclass
-class Cred:
-    name: str
-    refresh: Callable[[], None]             # 续期函数由凭证自己提供
-    cooldown_until: dict[str, float] = field(default_factory=dict)  # model -> 解冻时间
-    disabled: bool = False
-
-class CredPool:
-    def __init__(self, creds: list[Cred]):
-        self.creds = creds                  # 顺序固定，是 fill-first 的基础
-
-    def pick(self, model: str) -> Cred:
-        now = time.time()
-        for c in self.creds:                # 从头扫，前面的用完才轮到后面
-            if c.disabled or c.cooldown_until.get(model, 0) > now:
-                continue
-            return c
+def pick(self, model: str) -> Cred:
+    now = time.time()
+    ready = [c for c in self.creds if c.usable(model, now)]  # 跳过禁用和这个模型冷却中的
+    if not ready:
         raise RuntimeError(f"all creds cooling down for {model}")
+    if self.strategy == "fill-first":
+        return ready[0]                              # 前面的用到触顶才轮到后面
+    return ready[next(self._rr) % len(ready)]        # 默认：轮流摊匀
 
-    def execute(self, model: str, call: Callable):
+def execute(self, model: str, call) -> str:
+    tried = set()
+    while True:
         c = self.pick(model)
+        if c.name in tried:
+            raise RuntimeError(f"no more creds for {model}")
+        tried.add(c.name)
         try:
             return call(c)
         except QuotaError as e:
-            c.cooldown_until[model] = time.time() + e.reset_in   # 只冷却这个模型
-            return self.execute(model, call)                     # 换下一个
+            c.cooldown_until[model] = time.time() + e.reset_in  # 只冷却这个模型
         except AuthExpired:
             c.refresh()
-            return call(c)
+            return call(c)                           # 续期后重试一次
 ```
 
-这段在 Python 3.11 下跑过：第一个凭证配额触顶后进入冷却，请求切到第二个；401 时续期后重试成功。生产版本还要补后台续期循环，并把落盘的不变配置和运行时状态分开存。
+这段在 Python 3.11 下跑过：fill-first 下第一个凭证在 sonnet 上触顶后切到第二个，haiku 仍用第一个；round-robin 下两个凭证轮流；401 续期后重试成功。
 
 ### 4.3 热重载：文件事件里大半是噪声
 
@@ -454,31 +462,35 @@ CLIProxyAPI 用第三种。fsnotify 的事件有多吵：
 
 #### 四个时间常量各挡一种噪声
 
-一个原始事件要过几道关才会真正触发重载（图 1-4）：
+配置文件和凭证目录的事件走不同的支路，各自要过几道关才会真正触发重载（图 1-4）：
 
 ```mermaid
 graph TB
-    A[fsnotify 原始事件] --> B[150ms 防抖 合并连续 Write]
-    B --> C{Remove 后 50ms 内文件又出现}
-    C -->|否| D[真删除 摘掉凭证]
-    C -->|是| E[当作内容更新]
-    E --> F{SHA256 与上次相同}
+    A[fsnotify 原始事件] --> K{哪个文件}
+    K -->|config.yaml| B[150ms 防抖]
+    B --> F{SHA256 与上次相同}
+    K -->|auth 目录 json| C{Remove 或 Rename}
+    C -->|否| F
+    C -->|是| R[1 秒内同路径重复则忽略]
+    R --> S[等 50ms 再看文件]
+    S -->|文件还在| F
+    S -->|文件没了| D[摘掉凭证]
     F -->|是| G[跳过]
     F -->|否| H[重载]
 ```
 
-图 1-4：一个文件事件到一次重载
+图 1-4：配置文件和凭证文件走两条支路（`internal/watcher/events.go:67-123`）
 
 参数是 `internal/watcher/watcher.go:83-86` 的四个常量：
 
 ```go
-replaceCheckDelay        = 50 * time.Millisecond   // 等原子替换的 Create 追上来
-configReloadDebounce     = 150 * time.Millisecond  // 合并一次保存的多个 Write
-authRemoveDebounceWindow = 1 * time.Second         // 区分真删除和替换
-serverUpdateDebounce     = 1 * time.Second         // 批量变更（如 rsync）合并成一次
+replaceCheckDelay        = 50 * time.Millisecond   // 凭证文件被删后等 50ms，看是不是原子替换
+configReloadDebounce     = 150 * time.Millisecond  // 合并一次保存的多个 Write（只管 config）
+authRemoveDebounceWindow = 1 * time.Second         // 1 秒内同一路径的重复 Remove 只处理一次
+serverUpdateDebounce     = 1 * time.Second         // 批量变更（如 rsync）合并成一次服务更新
 ```
 
-最后两个 1 秒窗口给删除判断和批量更新留缓冲。要注意 `replaceCheckDelay` 的实现方式：它是在事件处理函数里直接 `time.Sleep`（`internal/watcher/events.go:99`）。这 50ms 里事件循环不处理别的事件，短时间内大量凭证文件被替换时会排队。自己实现时，可以改成定时器回调，不阻塞循环。
+区分真删除和原子替换的，是 `replaceCheckDelay` 加一次 `os.Stat`：等 50ms 后文件还在，就当内容更新处理（`events.go:97-108`）。这 50ms 是在事件处理函数里直接 `time.Sleep` 等出来的（`internal/watcher/events.go:99`）。这 50ms 里事件循环不处理别的事件，短时间内大量凭证文件被替换时会排队。自己实现时，可以改成定时器回调，不阻塞循环。
 
 #### 内容哈希：事件来了不等于内容变了
 
@@ -515,45 +527,39 @@ func (w *Watcher) reloadConfigIfChanged() {
 - 先完整解析新配置，解析失败直接返回 false，旧配置继续生效。写错一行 YAML 不会把服务搞挂。
 - 新配置对象构造好之后，才在锁内一次性替换 `w.config` 指针。读配置的一方要么看到旧的，要么看到新的，不会看到改了一半的。
 
-#### watchdog 版热重载
-
-防抖加哈希两道关，用 `watchdog`：
+配套代码 `examples/01-cliproxyapi/hot_reload.py` 用 `watchdog` 把这几道关都实现了一遍：防抖、内容哈希、文件消失后等 50ms 再判断是否原子替换、解析失败不记哈希也不换配置。核心是防抖回调里的判断顺序：
 
 ```python
-import hashlib, threading
-from watchdog.events import FileSystemEventHandler
-
-class ReloadHandler(FileSystemEventHandler):
-    def __init__(self, path, on_reload, debounce=0.15):
-        self.path, self.on_reload, self.debounce = path, on_reload, debounce
-        self.last_hash = None
-        self.timer = None
-
-    def on_any_event(self, event):
-        if self.timer:
-            self.timer.cancel()                 # 防抖：取消上一个待执行的重载
-        self.timer = threading.Timer(self.debounce, self._maybe_reload)
-        self.timer.start()
-
-    def _maybe_reload(self):
-        try:
-            data = open(self.path, "rb").read()
-        except FileNotFoundError:
-            return                              # 原子替换瞬间读不到，等下一次
-        h = hashlib.sha256(data).hexdigest()
-        if h == self.last_hash:                 # 内容没变不重载
+def _settle(self):
+    if not os.path.exists(self.path):
+        time.sleep(self.replace_delay)      # 原子替换：等新文件就位
+        if not os.path.exists(self.path):
+            self.on_remove()                # 真删除
             return
+    data = open(self.path, "rb").read()
+    if not data:
+        return                              # 替换中途读到空文件
+    h = hashlib.sha256(data).hexdigest()
+    if h == self.last_hash:
+        return                              # 内容没变
+    if self.on_reload(data):                # 解析成功才记住哈希
         self.last_hash = h
-        self.on_reload(data)                    # on_reload 里先解析，失败就保留旧配置
 ```
 
-用 `Observer().schedule(handler, dir)` 挂上即可。这段在 Python 3.11 下跑过：连续三次写入只触发一次重载，写入相同内容不触发。
+自测在 Python 3.11 下跑过：连写三次只重载一次，写入相同内容不触发，写坏的 JSON 被拒绝且旧配置保留，`os.replace` 原子替换按更新处理，真删除触发移除回调。
 
 ## 5. 可嵌入的 SDK
 
-CLIProxyAPI 除了能作为独立进程跑，核心能力还以 SDK 形态提供。`sdk/cliproxy/service.go:36` 的 `Service` 把凭证加载、文件监听、钩子都做成了接口或工厂：`tokenProvider`、`watcherFactory`、`hooks`（`service.go:49-59`）。
+CLIProxyAPI 除了能作为独立进程跑，核心能力还以 SDK 形态提供。`sdk/cliproxy/builder.go` 的 Builder 把凭证加载、文件监听、鉴权都做成了可替换的依赖，`service.go:36` 的 `Service` 持有它们。
 
-这意味着想做“员工用自己的 Claude OAuth 访问内部网关”的团队，可以直接 import 这个包，实现 `Hooks` 接入自己的鉴权和审计，不必额外部署一个进程再走 HTTP。项目也没有内置 Prometheus 或 OpenTelemetry 埋点，可观测性留给嵌入方通过 `Hooks` 自己挂；自带的只有每个凭证一个 20 桶、每桶 10 分钟的请求统计环（`types.go:99-105`）。
+想做“员工用自己的 Claude OAuth 访问内部网关”的团队，可以直接 import 这个包，不必额外部署一个进程再走 HTTP。几个扩展点：
+
+- 客户端鉴权：`WithRequestAccessManager`（`builder.go:131`）
+- 凭证创建后的回调，如登记到自己的系统：`WithPostAuthHook`（`builder.go:159`）
+- 用量记录：实现 `usage.Plugin` 的 `HandleUsage`，用 `usage.RegisterPlugin` 注册（`usage/manager.go:154`、`:292`）
+- 启停回调：`WithHooks`，只有 `OnBeforeStart` 和 `OnAfterStart` 两个（`builder.go:57-65`）
+
+项目没有内置 Prometheus 或 OpenTelemetry 埋点，自带的只有每个凭证一个 20 桶、每桶 10 分钟的请求统计环（`types.go:99-105`）。做成对外服务时，要自己通过 usage 插件补标准指标，并在请求入口加 trace ID 透传。
 
 JSON 处理全程只用 tidwall 的 gjson 和 sjson 两个库，同一套路径语法。重度改写 JSON 的项目统一一套库，读代码时不用来回切换心智。
 
@@ -564,9 +570,9 @@ JSON 处理全程只用 tidwall 的 gjson 和 sjson 两个库，同一套路径�
 | 个人多账号复用自己的订阅 | 适合 | 正是设计目标 |
 | Go 服务想内嵌凭证池 | 适合 | 用 `sdk/cliproxy/auth/` |
 | 对外多租户、把订阅当 API 卖 | 不要 | 违反厂商账号共享条款，fill-first 的使用节律也更容易被风控识别 |
-| 需要标准指标和链路追踪的企业网关 | 谨慎 | 没有内置埋点，要自己通过 Hooks 补 |
+| 需要标准指标和链路追踪的企业网关 | 谨慎 | 没有内置埋点，要通过 usage 插件自己补 |
 
-这类项目依赖上游 CLI 的协议保持稳定。上游每改一次 token 格式或续期流程，它就要跟一次；上游一旦加上客户端签名或证书绑定，整条链路可能直接失效。当作生产基础设施之前，要接受这种脆弱性。
+这类项目依赖上游 CLI 的协议保持稳定。上游每改一次 token 格式或续期流程，它就要跟一次，前面提到的发版频率就是这个代价；上游一旦加上客户端签名或证书绑定，整条链路可能直接失效。当作生产基础设施之前，要接受这种脆弱性。
 
 照搬代码时，`conductor.go` 这个 4455 行的单文件不必学。作者把控制平面放在一个文件里，理由是状态机逻辑本来就耦合在一起。自己写时可以按动作拆成 select、execute、refresh、update 几个文件，方法仍挂在同一个 `Manager` 上，Go 里没有额外成本。
 
@@ -574,7 +580,7 @@ JSON 处理全程只用 tidwall 的 gjson 和 sjson 两个库，同一套路径�
 
 三块可以各自独立做。建议先把一条路径端到端跑通：OpenAI SDK 调 Claude 后端，只做 OpenAI 和 Claude 两个方向的翻译，加一个凭证。然后再按需求扩展：
 
-- 需要多账号，就加凭证池，先用 round-robin 加 401 自动续期，账号多了再加 fill-first 做对比；
+- 需要多账号，就加凭证池，先用 round-robin 加 401 自动续期，账号多了再切 fill-first 做对比（`examples/01-cliproxyapi/cred_pool.py` 两种都有）；
 - 需要改账号不重启，就加防抖加哈希的热重载；
 - 需要更多客户端，就往注册表里加翻译对子。
 

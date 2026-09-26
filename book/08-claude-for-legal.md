@@ -15,7 +15,7 @@ last_synced: "2026-08-09"
 
 ## 1. claude-for-legal
 
-[claude-for-legal](https://github.com/anthropics/claude-for-legal) 是 Anthropic 官方开的一个仓库，把法律行业拆成 12 个 Claude Code 插件、1 个合作方插件和 5 个托管 Agent 配方。商务合同、隐私合规、并购尽调、劳动纠纷、诉讼、监管、知识产权各一个插件，装进 Claude Code 或 Cowork，律师用斜杠命令就能干活。
+[claude-for-legal](https://github.com/anthropics/claude-for-legal) 是 Anthropic 官方开的一个仓库，把法律行业拆成 12 个 Claude Code 插件、1 个合作方插件和 5 个托管 Agent 配方（部署到 Claude Managed Agents API、在服务端无人值守运行的配置）。商务合同、隐私合规、并购尽调、劳动纠纷、诉讼、监管、知识产权各一个插件，装进 Claude Code 或 Claude Cowork（Anthropic 的桌面端 Agent 产品，同样支持插件），律师用斜杠命令就能干活。
 
 它的形态很少见：16 个顶层目录、151 个 `SKILL.md`、45799 行 Markdown，可执行代码只有 3 个 Python 脚本和 2 个 shell 脚本。一整个垂直行业的能力体系，几乎全部由提示词资产和 JSON/YAML 清单构成。
 
@@ -258,13 +258,13 @@ flowchart TB
 
 在用户按需装一两个插件的分发模型下，这个取舍成立。如果你的分发是整包下发、全员一致，就该反过来选共享。
 
-#### 两份清单与 CI 不变式
+#### 两份清单与编号不变式
 
 市场层的 `marketplace.json` 和插件层的 `plugin.json` 各存一份 name、description、author，内容必须逐字一致。仓库 `CLAUDE.md` 把这条写成了硬规矩。
 
-两份看着冗余，是因为有两个消费场景：市场清单要在不下载插件的情况下渲染整个列表，插件清单要能脱离市场独立安装。两份数据靠约定和 CI 保持同步。
+两份看着冗余，是因为有两个消费场景：市场清单要在不下载插件的情况下渲染整个列表，插件清单要能脱离市场独立安装。两份数据靠约定和校验保持同步。
 
-CI 还逐条检查一组编号不变式 I1 到 I11，其中几条对所有插件市场都成立：
+校验规则是一组编号不变式 I1 到 I11。它们由上游市场 claude-plugins-official 在 CI 里执行；本仓库的 `CLAUDE.md:30-31` 只要求提 PR 前在本地跑等价检查，仓库自己的 `.github/workflows/` 里只有一个 CLA 检查。其中几条对所有插件市场都成立：
 
 | 编号 | 规则 | 防什么 |
 |---|---|---|
@@ -464,7 +464,7 @@ flowchart LR
     TP[标准模板] --> DE[算 delta]
     SG[5 到 20 份已签合同] --> DE
     ST --> DE
-    DE --> RP[写进私有知识 样本不足时标 LIMITED DATA]
+    DE --> RP[写进私有知识 证据弱时标 LIMITED DATA]
 ```
 
 图 4-3：访谈定框架，模板与已签文件做差得到真实规则
@@ -482,29 +482,30 @@ flowchart LR
 
 `The delta is the real playbook.` 这句话可以搬到别的领域：**规程文档和实际执行记录之间的差值，才是真正在执行的规则。** 运维 SOP 和实际处置记录的差值、风控策略文档和实际放行记录的差值，都是同一个东西。只读规程拿到的是理想状态，和执行记录做差才拿到现实状态。
 
-样本不足时，低于 5 份就在私有知识的每一节标 `[LIMITED DATA — N agreements reviewed]`，避免下游把弱证据当强证据用。
+合同存放分散、没有合同管理系统的团队，模板加三五份已签合同也收下，但私有知识的每一节都要标 `[LIMITED DATA — N agreements reviewed]`（`:387`），避免下游把弱证据当强证据用。
 
 #### 偏差日志驱动的更新闭环
 
-初始化之后，知识的更新靠一条四步闭环，如图 4-4 所示。
+初始化之后，知识的更新靠一条闭环，起点是每周新签的合同，如图 4-4 所示。这正是上一节"规程和已签文件做差"的持续版：冷启动时做一次，之后每周做一次。
 
 ```mermaid
 flowchart LR
-    R[审阅技能 每次评审] --> D[deviation-log.yaml 记录偏离]
+    R[deal-debrief 每周扫已签合同] --> D[deviation-log.yaml 记录偏离]
     D --> M[playbook-monitor 检查阈值]
     M -- 未达阈值 --> S[静默记一笔]
     M -- 达到阈值 --> P[playbook-proposals.md 生成提案]
     P --> U[review-proposals 逐条给人审]
     U -- 接受 --> W[展示 diff 确认后写入]
     U -- 拒绝或推迟 --> L[记录决定]
-    W --> R
 ```
 
-图 4-4：偏差日志到知识库更新的闭环（`commercial-legal/agents/playbook-monitor.md`）
+图 4-4：已签合同到知识库更新的闭环（`commercial-legal/agents/deal-debrief.md`、`playbook-monitor.md`）
 
-**记录。** 每次评审发现实际立场偏离了规则，就写一条偏差记录，带条款、方向、依据、对方、日期。一次性的特殊让步可以标 `exclude_from_patterns: true`，不计入统计。
+**记录。** 写偏差日志的不是审阅技能，而是后台 Agent `deal-debrief`。它默认每周一跑一次，从合同管理系统拉过去 7 天签完的合同（没接合同管理系统就请律师手动上传），逐份和规则比对，把偏离列成一张表给律师看，趁律师还记得，请他补一句为什么让步（`deal-debrief.md:1-30`）。每份合同写一条记录，里面列出各条款的规则立场、实际签下的立场、严重程度和原因。律师认定是一次性特例的整笔交易，标 `exclude_from_patterns: true`，不计入模式统计（`:120-133`）。
 
-**触发。** 用的是数据触发，不是日历触发（`:22`）：每次成交复盘之后检查一次，同一条款 12 个月内偏离满 5 次就提案，不满就静默记一笔。两个数都可配置。日历触发的问题是没变化也要打扰人，几次之后用户就不看了。
+审阅技能只产出评审意见，不写这个日志。拿已签结果而不是评审过程做证据，统计的就是谈判之后真正落下的位置。
+
+**触发。** 用的是数据触发，不是日历触发（`playbook-monitor.md:22`）：每次 `deal-debrief` 跑完检查一次，同一条款 12 个月内偏离满 5 次就提案，不满就静默记一笔。两个数都可配置。日历触发的问题是没变化也要打扰人，几次之后用户就不看了。
 
 **提案。** 三条约束：
 
@@ -522,29 +523,36 @@ flowchart LR
 
 所以闭环的分工是：证据收集、模式识别、提案生成都自动化，变更由人确认。前三步省人的时间，第四步守住所有输出的来源。
 
-让模型直接写规则文件的方案没有摩擦，代价是用户往往不知道规则被改了什么。claude-for-legal 多了一步人工，换来每次变更都留有记录：谁、什么时候、基于什么证据、批准了什么。在受监管行业这是审计要求。
+另一种做法是让模型自己决定记什么。Windsurf 的 Cascade 在对话中遇到它认为有用的上下文，会自动生成记忆，存在本机 `~/.codeium/windsurf/memories/`，按工作区隔离（[官方文档](https://docs.devin.ai/desktop/cascade/memories)）。这种方式没有摩擦，适合记个人偏好；代价是用户往往不知道记下了什么、改了什么。claude-for-legal 多了一步人工，换来每次变更都留有记录：谁、什么时候、基于什么证据、批准了什么。在受监管行业这是审计要求。
 
 照这个结构实现，大致是下面的骨架（示意伪码）：
 
 ```
-# 一次评审结束时
-def after_review(result, profile):
-    for item in result.deviations:                    # 实际立场 vs 规则
+# 每周一次：扫过去 7 天签完的合同
+def after_weekly_debrief(profile):
+    for deal in signed_since(days=7):                  # 已签结果，不是评审过程
+        devs = diff_against_rules(deal, profile)       # 实际签下的 vs 规则立场
+        if not devs:
+            continue
+        one_off, reasons = ask_attorney(deal, devs)    # 趁记得，请律师补原因
         append(DEVIATION_LOG, {
-            clause: item.clause,
-            direction: item.direction,
-            basis: item.basis,
-            counterparty: item.counterparty,
-            date: today(),
-            exclude_from_patterns: item.is_one_off,   # 一次性特例
+            deal_id: deal.id,
+            counterparty: deal.counterparty,
+            date_signed: deal.date,
+            exclude_from_patterns: one_off,            # 交易级：整笔特例不计入
+            deviations: [{clause: d.clause,
+                          standard: d.rule,
+                          signed: d.actual,
+                          basis: reasons.get(d.clause)} for d in devs],
         })
     run_monitor(profile)
 
 def run_monitor(profile):
     cfg  = profile.monitor_settings or {threshold: 5, lookback_months: 12}
-    rows = [r for r in read(DEVIATION_LOG)
-            if not r.exclude_from_patterns
-            and within(r.date, cfg.lookback_months)]
+    rows = [d for deal in read(DEVIATION_LOG)
+            if not deal.exclude_from_patterns
+            and within(deal.date_signed, cfg.lookback_months)
+            for d in deal.deviations]
     proposals = []
     for clause, group in group_by(rows, 'clause'):
         if len(group) < cfg.threshold:
@@ -578,9 +586,9 @@ def review_proposals():
 
 把条款换成你领域里的规则单元，闭环就能跑起来。
 
-### 4.4 同一份资产跑在两种运行时
+### 4.4 无人值守运行和第三方技能的权限边界
 
-同一份提示词和技能，交互式装成插件，无人值守部署成托管 Agent。无人值守那条路上，写、出网、外发三种权限拆给不同的节点，由 CI 检查。
+同一份提示词和技能，交互式装成插件，无人值守部署成托管 Agent。无人值守那条路上，写、出网、外发三种权限拆给不同的节点，由一个 lint 脚本检查。第三方技能进环境之前，另有一道安装闸门。
 
 #### 定时任务和交互式共用一份提示词
 
@@ -609,6 +617,8 @@ system:
 skills:
   - { from_plugin: ../../regulatory-legal }
 ```
+
+`handoff_request` 是节点交还给外部编排层的结构化请求，要发消息、要启动别的 Agent，都由编排层代为执行。
 
 主体系统提示词是插件里的 Agent 定义，一个字没复制。`append` 只补三处环境差异：产出物落盘不直发 Slack、外部输入当不可信数据、结论是线索不是法律判断。技能也是引用整个插件目录。改一次规则，交互式和定时任务同时生效。
 
@@ -647,6 +657,8 @@ flowchart TB
 - **编排者权限最小。** 它只负责调度，不碰危险能力。这和通常给主控节点最大权限的直觉相反。
 - **每种危险能力只有一个持有者。** 出网只有 feed-reader，写盘只有 digest-writer，出事时排查范围是一个节点。
 - **外发能力谁都没有。** 要发 Slack 就发一个 handoff 请求，由编排层去发，模型碰不到那个 token。
+
+表里有一处和源码不完全对得上：`reg-monitor` 编排者的工具只开了 read、grep、glob，但它的 `mcp_servers` 里声明了一个 gdrive 连接（`managed-agent-cookbooks/reg-monitor/agent.yaml:29-30`）。下面要讲的 lint 只检查工具列表里的 `mcp_toolset` 条目，不看 `mcp_servers`，所以这条声明不会被拦下。自己实现时，lint 两处都要查。
 
 #### 出网白名单写在工具配置里
 
@@ -696,10 +708,14 @@ output_schema:
           source:  { type: string, maxLength: 64,  pattern: "^[A-Za-z0-9 ._/-]+$" }
           title:   { type: string, maxLength: 400 }
           date:    { type: string, maxLength: 10,  pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" }
+          summary: { type: string, maxLength: 1000 }
           url:     { type: string, maxLength: 512, pattern: "^https://" }
+          # …另有 agency、docket_id 两个带 pattern 的字段
 ```
 
-它防的场景是：读取不可信输入的那一层被注入了，想把攻击载荷传给下一层。`additionalProperties: false`、`maxLength`、`pattern` 三者合起来，能通过的只有几个受限字符集、限长的字段，长篇指令过不去。`maxItems: 500` 防的是用海量条目把下游上下文撑爆。
+它防的场景是：读取不可信输入的那一层被注入了，想把攻击载荷传给下一层。`additionalProperties: false` 不让它多塞字段，`maxLength` 和 `maxItems: 500` 限住体量，`source`、`date`、`url` 这类字段再用 `pattern` 锁死字符集。
+
+但 schema 挡不住所有东西。`title` 允许 400 字、`summary` 允许 1000 字自由文本，都没有 pattern（`:83,86`），一段注入话术完全装得下。所以闭合 schema 管的是结构和体量，内容上的防护在下游：接收这些文本的 materiality-filter 既不能出网也不能写，交给编排层的动作只能从固定的 intent 枚举里选（下一节）。即使注入话术穿过了 schema，它能指使的节点也没有可用的危险能力。
 
 `scripts/validate.py` 说明了为什么要自己校验：托管 Agent API 当前不强制结构化输出，所以部署脚本在读取节点和编排者之间自己跑一次 JSON Schema 校验。
 
@@ -707,7 +723,7 @@ output_schema:
 
 `scripts/orchestrate.py` 的文档字符串先交代了威胁模型：handoff 请求是从编排者的文本输出里解析出来的，而编排者的输入来自读取不可信文档的那些 Agent。攻击者只要在文档里埋一段伪造的 handoff 请求，让它被回显到编排者输出里，就会被当成真请求解析。
 
-然后它列了五条控制措施，每条都标了可靠性等级：
+然后它列了五条控制措施，每条都标了可靠性等级（下面是译文，原文为英文）：
 
 ```
   1. 闭合枚举的 intent（PRIMARY）。每个 handoff 必须指定固定枚举里的
@@ -729,7 +745,7 @@ output_schema:
 
 #### 用 lint 守住分层
 
-这套分层靠人自觉守不住：加个功能顺手给编排者开个写权限，评审时未必看得出来。`scripts/lint-tool-scope.py`（107 行）把规则做成了检查：
+这套分层靠人自觉守不住：加个功能顺手给编排者开个写权限，评审时未必看得出来。`scripts/lint-tool-scope.py`（107 行）把规则做成了检查，由 `scripts/test-cookbooks.sh:13` 调用，在本地跑：
 
 ```python
         if ttype == "mcp_toolset":
@@ -744,7 +760,7 @@ output_schema:
                             f"emit a handoff_request instead")
 ```
 
-处理默认值的那段（`:76-80`）：
+处理默认值的那段（`:76-80`，注释为译文）：
 
 ```python
         # 如果默认是启用，它会扩展到工具集里的每个工具，包括 write 和 Slack。
@@ -796,13 +812,11 @@ tools:
 mcp_servers: []                             # 不给网，不给 MCP
 ```
 
-再配一个几十行的 lint，检查编排者不带 MCP、不带 write、`default_config.enabled` 为 false，挂进 CI。
+再配一个几十行的 lint，检查编排者不带 MCP（`mcp_toolset` 和 `mcp_servers` 都查）、不带 write、`default_config.enabled` 为 false，挂进 CI。
 
-### 4.5 第三方技能的安装闸门
+#### 社区技能的安装闸门
 
-社区技能进环境之前要过一道闸。这个仓库的特别之处在于，它也写明了这道闸哪些地方靠不住。
-
-#### 七步安装流程
+权限分层管住的是自己写的节点。社区技能是另一个入口，它进环境之前要过一道闸，这个仓库还写明了这道闸哪些地方靠不住。
 
 `legal-builder-hub` 插件专门处理一件事：律师从 GitHub 装一个社区技能，等于让它拿到自己的卷宗、私有知识和检索连接器的访问权，而社区技能没有任何人认证。
 
@@ -811,7 +825,7 @@ mcp_servers: []                             # 不给网，不给 MCP
 | 步 | 做什么 | 为什么在这个位置 |
 |---|---|---|
 | 1 | 读来源白名单 | 在拉取任何第三方内容之前 |
-| 2 | 拉取，优先在只读子 Agent 里做 | 分析阶段即使被注入也没有写能力 |
+| 2 | 拉取，建议在只读子 Agent 里做 | 分析阶段即使被注入也没有写能力 |
 | 3 | 完整展示 SKILL.md 原文 | 用户手里有原始证据 |
 | 4 | 查钩子、MCP、工具权限、写入目标、网络调用 | 看它能碰什么，不看它说什么 |
 | 5 | 跑 QA 技能 | 设计质量评审 |
@@ -820,22 +834,20 @@ mcp_servers: []                             # 不给网，不给 MCP
 
 表 4-8：社区技能安装的七步闸门
 
-如图 4-6 所示，不可信内容第一次进上下文在第 2 步，写盘在第 7 步，中间隔了五步。节点上标 PRIMARY 的是真控制。
+如图 4-6 所示，不可信内容第一次进上下文在第 2 步，写盘在第 7 步，中间隔了五步。标"站得住"的三步，是安装器自己认定在模型被注入后仍然有效的措施（`:45-53`）。第 2 步的只读子 Agent 原文用的是"Prefer"，是建议而不是强制。
 
 ```mermaid
 flowchart TB
-    A[1 读来源白名单 PRIMARY] --> B[2 在只读子 Agent 里拉取 PRIMARY]
-    B --> C[3 完整展示原文]
+    A[1 读来源白名单 站得住] --> B[2 拉取 建议放只读子 Agent]
+    B --> C[3 完整展示原文 站得住]
     C --> D[4 结构化信任检查]
-    D --> E[5 QA 技能 纵深防御]
-    E --> F[6 用户重新确认 PRIMARY]
+    D --> E[5 QA 技能]
+    E --> F[6 用户重新确认 站得住]
     F --> G[7 写盘 追加安装日志]
     A --> X[严格模式下未知来源 直接拒绝]
 ```
 
-图 4-6：社区技能安装的七道闸门与信任分级
-
-#### 许可证字段只做枚举匹配
+图 4-6：社区技能安装的七步与安装器自认可靠的三步
 
 许可证字段是外部发布者写的，安装器不让模型自由理解它（`:82-138`）。只能拿一个固定的 SPDX（开源许可证的标准短标识，如 `MIT`、`Apache-2.0`）列表做严格匹配。匹配不上的一律不解释，直接作为发现项交给人，包括：
 
@@ -847,9 +859,9 @@ flowchart TB
 
 不管哪种模式，安装器都不会把从不可信来源读到的许可证字符串写进白名单。白名单只由冷启动访谈和用户自己编辑修改。
 
-把不可信输入先压成一个受控的枚举值，再让它参与判断。4.4 节 handoff 的 intent 枚举用的是同一个手法。
+把不可信输入先压成一个受控的枚举值，再让它参与判断。前面 handoff 的 intent 枚举用的是同一个手法。
 
-#### 这道闸自己承认的上限
+#### 安装闸门自己承认的上限
 
 技能在 `:36-59` 写明了自己的局限：
 
@@ -864,8 +876,6 @@ flowchart TB
 它还建议把拉取和分析放进只读上下文（只有 Read 和 WebFetch，没有 Write、Bash、MCP），注入即使成功也没有东西可以利用。
 
 这几条措施都不依赖模型正确分析攻击者控制的文本，所以可靠。反过来，凡是靠模型自己判断有没有被注入的措施，都只能算纵深防御。
-
-#### 运营层的门禁
 
 `README.md` 还列了几条运营层门禁：
 
@@ -909,11 +919,11 @@ flowchart TB
 - **资产分层。** 方法、私有知识、数据接入、运行形态各自演化。用 LangGraph 或自研框架，这个分法一样成立。
 - **模板与实例分离，缺配置就失败。** 改动量小，最容易被忽略。
 - **规程和执行记录做差。** 比只读规程得到的知识接近现实。
-- **权限分层加 CI 检查。** 多 Agent 一旦上生产，这套是必需的。
+- **权限分层加 lint 检查。** 多 Agent 一旦上生产，这套是必需的。
 
 ### 6.2 要谨慎的
 
-**151 个 Markdown 文件的维护成本。** 三份骨架技能复制了 12 次，改一次访谈流程要动 12 个文件。这个仓库靠人工和 CI 一致性检查扛着，规模再大一倍会很吃力。如果插件数量会长到几十个，或者骨架会频繁变动，要在早期想清楚共享机制。
+**151 个 Markdown 文件的维护成本。** 三份骨架技能复制了 12 次，改一次访谈流程要动 12 个文件。这个仓库靠人工和本地一致性检查扛着，规模再大一倍会很吃力。如果插件数量会长到几十个，或者骨架会频繁变动，要在早期想清楚共享机制。
 
 **没有行为回归测试。** `scripts/` 里的校验全是结构性的：JSON Schema、权限范围、清单不变式。没有测试验证"给定这份合同，输出应该标出这三个问题"。提示词改一个字导致输出退化，CI 发现不了。这是整个提示词工程领域的现状，但你的东西要上生产，就得自己补评测集，而且在设计阶段就规划。
 
@@ -929,7 +939,7 @@ flowchart TB
 
 ## 7. 自己搭一个的顺序
 
-按这个顺序做，两周左右能出一个能用的垂直领域插件市场：
+按这个顺序做：
 
 1. **切包切技能。** 列 3 到 5 个真实岗位，每个岗位列 8 到 15 个可交付产物。先只做一个岗位，跑通了再复制。
 2. **私有知识层。** 定模板、实例、跨包共享三个路径，写好模板结构和加载函数（迁移、占位符检查、拼接共享层和专有层）。门禁放在代码里，不只写在提示词里。

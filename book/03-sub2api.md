@@ -5,7 +5,7 @@ based_on_tag: v0.1.133
 based_on_commit: 68901cb
 written_at: 2026-06-02
 learning_objectives:
-  - 能给有状态的上游做粘性会话调度：按会话标识三层递进地路由（先按上游返回的 id 粘、再按请求内容 hash 粘、最后才负载均衡），让续聊请求落回同一后端账号
+  - 能给有状态的上游做粘性会话调度：三层递进地路由（先按上游返回的 id 粘，再按会话 hash 粘，最后才负载均衡），会话 hash 优先取客户端显式给的会话标识，没有才从请求内容派生
   - 能写一个 HTTP 入、WebSocket 出的协议桥接 forwarder，把客户端的 HTTP/SSE 和上游的 WebSocket 桥起来，并在首字前缓冲非 token 事件，让上游早断时还能重试或干净地报错
   - 能给 OAuth token 池做并发安全的刷新：进程内锁 + 分布式锁 + 加锁后 DB 重读 + invalid_grant 竞争恢复，避免多副本重复消费同一 refresh token
 feishu_url: "https://fivwvysqdz.feishu.cn/wiki/CYwewUxRUiCf5jkQcHAcA7FhnTb"
@@ -16,9 +16,9 @@ last_synced: "2026-08-02"
 
 [sub2api](https://github.com/Wei-Shaw/sub2api) 是一个把订阅版 LLM（Claude Pro、ChatGPT Pro、Gemini 等）的能力做成多人共用 API 网关的开源 SaaS。它有完整的用户体系、API Key 发放、多账号池调度、计费、支付集成。后端 Go + Ent ORM + PostgreSQL + Redis，前端 Vue3，是一套能直接部署上线的系统。
 
-最新最强的模型几乎都先以订阅形式发布。一个 200 美元的 Pro 订阅，一个人用不完，团队几个人合用、或者给脚本和评测台共享，是很自然的需求。但订阅卖的是个人坐席，没有 API key。
+新模型有时先在订阅产品里开放，API 晚一步（本书前言提到的 GPT-5.5 就是这样）。一个 200 美元的 Pro 订阅，一个人用不完，团队几个人合用、或者给脚本和评测台共享，是很自然的需求。但订阅卖的是个人坐席，没有 API key。
 
-把单个 CLI 的 OAuth 翻成 API 的本地代理（如 CLIProxyAPI 这类），解决的是"我一个人本地用"。要把订阅资源做成给一群人用的服务，要处理的事情完全是另一个量级：
+把单个 CLI 的 OAuth 翻成 API 的本地代理（如第 1 章的 CLIProxyAPI），解决的是"我一个人本地用"。要把订阅资源做成给一群人用的服务，要处理的事情完全是另一个量级：
 
 - 多个订阅账号组成一个池，请求来了选哪个账号、某个账号 429 了怎么冷却切换
 - 上游是**有状态的**：OpenAI 的 Responses API 续聊要带 `previous_response_id`，这个 id 只在当初生成它的那个账号上有效，跨账号就失效，不能随便负载均衡
@@ -27,7 +27,7 @@ last_synced: "2026-08-02"
 
 单进程、单用户的本地代理遇不到这些问题。sub2api 里有三个做法和"把订阅当 API 卖"这件业务无关，可以搬到别的系统：
 
-1. **有状态后端的粘性会话调度（session affinity）**。上游一旦有状态（续聊要回到同一账号、购物车绑同一 server、有 server-side session），就不能纯负载均衡。sub2api 按三层递进地粘：先按上游返回的 id，再按请求内容 hash，最后才负载均衡。
+1. **有状态后端的粘性会话调度（session affinity）**。上游一旦有状态（续聊要回到同一账号、购物车绑同一 server、有 server-side session），就不能纯负载均衡。sub2api 按三层递进地粘：先按上游返回的 id，再按会话 hash，最后才负载均衡。会话 hash 优先用客户端显式给的会话标识，实在没有才从请求内容里派生。
 
 2. **HTTP 入、WebSocket 出的协议桥接**。客户端讲 HTTP/SSE，上游走 WebSocket，中间要做一座桥，还要在首个 token 之前缓冲事件，让上游早断时还有机会重试。
 
@@ -40,7 +40,7 @@ git clone --depth 1 --branch v0.1.133 https://github.com/Wei-Shaw/sub2api.git
 cd sub2api
 ```
 
-路径都从 `backend/` 算起（前端不在本章范围）。本文基于 tag `v0.1.133`（commit `68901cb`）。它是个体量很大的项目（后端约 45 万行 Go，含 ent 生成代码和测试），本章只看后端 `internal/service/` 里的三个模块。
+路径都从 `backend/` 算起（前端不在本章范围）。本文基于 tag `v0.1.133`（commit `68901cb`）。它是个体量很大的项目：后端约 46 万行 Go（不含测试，含 Ent 生成代码），本章只看 `internal/service/` 里的三个模块。
 
 ## 2. 部署形态与接入路径
 
@@ -75,17 +75,15 @@ curl http://YOUR_SERVER_IP:8080/v1/chat/completions \
 
 ```mermaid
 sequenceDiagram
-    participant C as 客户端 Bearer Key
-    participant G as gateway 路由 鉴权
-    participant S as 账号调度器 三层粘性
-    participant R as OAuth 刷新 并发安全
-    participant F as 协议转发 HTTP 或 WS 桥
+    participant C as 客户端
+    participant G as 网关
+    participant F as 协议转发
     participant U as 上游订阅后端
-    C->>G: 1 请求 + API Key
-    G->>S: 2 选一个订阅账号
-    S->>R: 3 token 过期 先刷新
-    R->>F: 4 带可用账号去转发
-    F->>U: 5 HTTP 或 WebSocket
+    C->>G: 1 请求 带 API Key
+    G->>G: 2 鉴权 选账号 4.1 节
+    G->>G: 3 token 过期先刷新 4.3 节
+    G->>F: 4 带可用账号转发
+    F->>U: 5 HTTP 或 WebSocket 4.2 节
     U-->>F: 6 流式响应
     F-->>C: 7 翻成客户端协议回流 同时计费
 ```
@@ -186,8 +184,21 @@ decision.Layer = openAIAccountScheduleLayerLoadBalance
 三层各做一件事：
 
 - **第一层**：请求带了 `previous_response_id`，就查这个 response 当初落在哪个账号，账号可用就直接返回。命中时顺手把 `session_hash` 也绑到这个账号（`:292-294`），下一次即使客户端没带 id，第二层也能接住。
-- **第二层** `selectBySessionHash`：新会话或不走 Responses 的请求没有 id，就按请求内容算一个 `session_hash`，查它之前粘过的账号。
+- **第二层** `selectBySessionHash`：请求没带 id，就用 `session_hash` 查它之前粘过的账号。
 - **第三层** `selectByLoadBalance`：前两层都没命中，才按实时负载、错误率、首字延迟给候选账号打分，挑最优的。
+
+#### session_hash 从哪来
+
+`session_hash` 不是简单地哈希请求内容。`GenerateSessionHash`（`openai_gateway_service.go:1219-1235`）按优先级取种子：
+
+1. 请求头 `session_id`
+2. 请求头 `conversation_id`
+3. 请求体里的 `prompt_cache_key`（opencode 会带）
+4. 以上都没有，才从请求内容派生：模型、system、工具和第一条用户消息（`openai_content_session_seed.go`）
+
+客户端显式给的会话标识最可靠：同一个会话内它不会变，不同会话之间也不会撞。内容派生只是退路，两个用户发了一模一样的开场白就会被粘到同一个账号上。所以像 `/v1/images` 这类无状态端点，sub2api 用的是 `GenerateExplicitSessionHash`，只认显式标识，没有就不粘（`:1201-1210`，调用方在 `internal/handler/openai_images.go:136`）。
+
+这条可以直接搬走：做粘性调度时，先让客户端传会话标识，内容哈希只做兜底。
 
 #### session_hash 换算法时怎么不断粘性
 
@@ -195,9 +206,9 @@ decision.Layer = openAIAccountScheduleLayerLoadBalance
 
 为什么要这么麻烦？因为 `session_hash` 是用作缓存 key 的，如果直接换算法，上线那一刻所有正在进行的老会话，新算出来的 hash 跟缓存里存的旧 hash 对不上，粘性瞬间全断、续聊集体失效。双写双读让老会话还能按旧 hash 找回原账号，平滑过渡。改"用作缓存 key 的哈希算法"都会遇到这个迁移问题，双写双读加降级是常见解法。
 
-#### Python 版三层调度器
+#### 两张映射表就是调度器的全部状态
 
-核心是两套映射缓存，按强到弱依次试：
+用 Python 写，按强到弱依次查两张表：
 
 ```python
 class StickyScheduler:
@@ -288,7 +299,7 @@ if shouldBuffer {
 
 - **首个 token 之前**：非 token、非终端事件只进缓冲，下游一个字节都没收到。
 - **首个 token 到达**：先把缓冲的事件按原顺序补发，再发当前事件。前导事件不丢。
-- **之后**：按批量 flush，默认攒 4 帧或等 25ms 刷一次（`:49-50`）。
+- **之后**：按批量 flush。配置默认每帧都立即 flush，间隔 10ms（`internal/config/config.go:1808-1809`，`deploy/config.example.yaml` 相同）；`openai_ws_forwarder.go:49-50` 里的 4 帧 / 25ms 只在没有配置时兜底。
 
 #### 下游没写过字节，就还能重试
 
@@ -305,9 +316,9 @@ if shouldBuffer {
 
 推广到任何边转发边处理的代理，规则是同一条：**在第一个不可撤销的动作之前，留一个能反悔的窗口。**
 
-#### 用 aiohttp 搭一座桥
+#### 把 prepare 推迟到首个 token
 
-骨架抓三件事：代建 WS、首个 token 前缓冲、逐帧翻成 SSE。下面用 `aiohttp` + `websockets`（v13 以上）写，`is_token`、`is_terminal`、`is_error`、`build_payload` 按上游协议实现，这里省略：
+桥的骨架只抓三件事：代建 WS、首个 token 前缓冲、逐帧翻成 SSE。下面用 `aiohttp` + `websockets`（v14 以上，v13 的 `connect` 不认 `additional_headers` 参数）写，`is_token`、`is_terminal`、`is_error`、`build_payload` 按上游协议实现，这里省略：
 
 ```python
 def sse(evt):
@@ -395,7 +406,7 @@ graph TB
 - **加锁后 DB 重读 + 二次检查**（`:108-126`）：拿到锁后**从 DB 重新读最新账号**，而不是用进程缓存里可能已过期的 `refresh_token`；再检查一次是否真的还需要刷（很可能在你抢锁的间隙，别的 worker 已经刷好了）。
 - **invalid_grant 竞争恢复**（`:131-142`）：万一还是刷出了 `invalid_grant`（refresh_token 被别人消费了），重读 DB，发现 `refresh_token` 已经变了，就说明别的 worker 刷成功了：直接用更新后的账号返回，标记为"竞争恢复"而不是失败。
 
-后两道是在补锁的漏洞。**锁只能减少撞车，不能消灭撞车**：Redis 不可用时会降级成只有进程内锁，锁 TTL 过期后也可能两个副本同时在刷。所以加锁后还要重读、二次检查，防住"我抢到锁时别人刚刷完"；`invalid_grant` 恢复则处理锁没拦住、真撞了车的情况。这套防御的统一入口是 `RefreshIfNeeded`（定义在 `oauth_refresh_api.go:75`）；上层的 `refreshWithRetry`（`token_refresh_service.go:265-296`）带重试地调它，成功后打一个 `_token_version` 时间戳落库。
+后两道是在补锁的漏洞。**锁只能减少撞车，不能消灭撞车**：Redis 不可用时会降级成只有进程内锁，锁 TTL 过期后也可能两个副本同时在刷。所以加锁后还要重读、二次检查，防住"我抢到锁时别人刚刷完"；`invalid_grant` 恢复则处理锁没拦住、真撞了车的情况。这套防御的统一入口是 `RefreshIfNeeded`（定义在 `oauth_refresh_api.go:75`），刷新成功后由它给凭证打上 `_token_version` 时间戳再落库（`:149`）。上层的 `refreshWithRetry`（`token_refresh_service.go:265-296`）带重试地调它，只有在走不了统一入口的降级路径上才自己写这个时间戳（`:291`）。
 
 #### 锁会误删别人的锁
 
@@ -414,6 +425,25 @@ func (c *geminiTokenCache) ReleaseRefreshLock(ctx context.Context, cacheKey stri
 ```
 
 锁的值固定是 `1`，释放时无条件 `Del`。设想副本 A 拿到锁，刷新卡住超过了 TTL，锁自动过期；副本 B 接着拿到锁开始刷；这时 A 刷完执行 `Del`，删掉的是 B 的锁，副本 C 又能进来。正确做法是把锁的值设成持有者自己的随机 token，释放时先比较再删除，而且比较和删除要原子（用 Lua 脚本）。Redis 官方文档讲单实例锁时给的就是这个做法。
+
+在真实 Redis 上跑一遍这个时序（锁 TTL 300ms，A 的刷新要 500ms，B 在 350ms、C 在 550ms 来抢锁），脚本在 `examples/03-sub2api/lock_race.py`：
+
+```text
+--- naive ---
+[   1ms] A 拿到锁，开始刷新
+[ 351ms] B 拿到锁，开始刷新
+[ 503ms] A 刷完，释放锁；此刻锁的值 = None
+[ 551ms] C 拿到锁，开始刷新
+--- owner ---
+[   1ms] A 拿到锁，开始刷新
+[ 351ms] B 拿到锁，开始刷新
+[ 502ms] A 刷完，释放锁；此刻锁的值 = b'B-40bc42'
+[ 551ms] C 抢锁失败，锁被别人持有
+```
+
+`naive` 是 sub2api 的写法：A 在 503ms 把 B 的锁删了，C 在 551ms 趁机进来，和 B 同时在刷。`owner` 版本里 A 的释放什么也没删，C 被挡住。
+
+两种写法在 351ms 到 503ms 之间都有 A、B 同时在刷：TTL 短于刷新耗时，owner token 也救不了。它只保证不误删，TTL 本身要比最慢的一次刷新长，剩下的撞车交给重读和竞争恢复。
 
 在 sub2api 里这个坑的后果有限，因为后面还有重读和 `invalid_grant` 恢复兜着。但竞争恢复也不是万能的：RFC 6819（5.2.2.3 节）和 RFC 9700（OAuth 2.0 安全最佳实践，4.14 节）都建议授权服务器检测 refresh token 复用，一旦发现旧 token 被再次使用，可以吊销这一整族 token。上游如果这样实现，撞车一次账号就要重新授权，恢复逻辑重读 DB 也拿不到可用的新 token。
 
@@ -456,20 +486,22 @@ def refresh_if_needed(account_id):
 | 做法 | 项目里的位置 | 适用场景 |
 |---|---|---|
 | 上游 WS 连接按账号池化，终端事件后回收 | `openai_ws_forwarder.go` | 频繁建上游长连接的代理 |
-| 刷新成功后写 `_token_version` 时间戳 | `token_refresh_service.go` | 多副本判断谁的 token 更新 |
+| 刷新成功后写 `_token_version` 时间戳 | `oauth_refresh_api.go:149` | 多副本判断谁的 token 更新 |
 | 实体和查询用 Ent ORM 生成，业务只写 schema | `ent/schema/` | 要类型安全、少写样板 SQL 的 Go 项目 |
 | 协议翻译一个方向一个文件 | `internal/pkg/apicompat/` | 多协议互转 |
 
-最后一条回答了一个常见疑问：为什么不抽一个统一的中间表示？协议是别人定义的，字段经常变，中间表示很难跟上。按方向写显式函数，改一个方向不影响别的。
+最后一行的目录可以从文件名直接读出方向，例如 `anthropic_to_responses.go`、`responses_to_anthropic.go`、`chatcompletions_to_responses.go`，想看某个方向怎么翻就从对应文件进去。
+
+按方向拆文件也回答了一个常见疑问：为什么不抽一个统一的中间表示？协议是别人定义的，字段经常变，中间表示很难跟上。按方向写显式函数，改一个方向不影响别的。
 
 ## 6. 适用边界
 
 | 场景 | 建议 | 原因 |
 |---|---|---|
-| 学有状态后端的调度 / 协议桥接 / 并发刷新 | 适合 | 三个模式抽象干净，能直接搬到别的系统 |
-| 自己内部小团队共享订阅、自担风险 | 看情况 | 技术上能跑，但要清楚 ToS 风险（下条） |
-| 对外把订阅转售成商用 API | 不要 | 直接踩各家"账号共享 / 转售"的 ToS 红线，且依赖上游协议稳定，随时可能被风控或协议变更打断 |
-| 想要一个无状态 API key 网关 | 不必用它 | 它的复杂度全在"有状态上游 + 多账号订阅"，无状态场景用 one-api / LiteLLM 更轻 |
+| 学有状态后端的调度、协议桥接、并发刷新 | 适合 | 三个做法不依赖订阅业务，能直接搬 |
+| 内部小团队共享订阅、自担风险 | 看情况 | 技术上能跑，先想清 ToS 风险 |
+| 对外把订阅转售成商用 API | 不要 | 违反各家禁止转售的条款，随时可能被风控打断 |
+| 想要一个无状态 API key 网关 | 不必用它 | 复杂度在有状态上游，无状态用 one-api 更轻 |
 
 sub2api 的核心价值绑在一个灰色的商业模式上，把个人订阅转成多人 API。这件事本身踩 ToS，且依赖上游不变（Responses 的 WS 模式、官方 CLI 的 OAuth client_id 一旦变更或加固，整条链路就断）。把它当生产基础设施前，这个脆弱性和合规风险要想清楚。三个工程做法和卖订阅无关，有状态后端的网关都用得上。不该照搬的只有两样：转售订阅的商业模式本身，以及借用官方 client_id。后者技术上能用，但合规上是借用别人的 OAuth 客户端身份，自建产品时要评估。
 
@@ -484,7 +516,7 @@ sub2api 的核心价值绑在一个灰色的商业模式上，把个人订阅转
 
 ## 8. 延伸阅读
 
-- [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)：同样把订阅版 CLI 包成 API，但定位是单人本地用，没有多租户、计费和有状态调度。对照着读，能看清本地代理和多人 SaaS 在工程上差在哪。
+- [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)（第 1 章）：同样把订阅版 CLI 包成 API，但定位是单人本地用，没有多租户、计费和有状态调度。对照着读，能看清本地代理和多人 SaaS 在工程上差在哪。
 - [songquanpeng/one-api](https://github.com/songquanpeng/one-api) 与 [Calcium-Ion/new-api](https://github.com/Calcium-Ion/new-api)：同为多账号 LLM 网关，但面向的是无状态的 API key 渠道，看它们的 channel 调度和计费模型，能反衬出 sub2api 为"有状态订阅"多做的那些事。
 - [BerriAI/litellm](https://github.com/BerriAI/litellm)：协议翻译做得更全的 Python 网关，对照它能看 `apicompat/` 按方向拆 vs 统一 IR 两种翻译架构。
 - [《AI Token 中转站实战》](https://inferloop.dev/llm-gateway)：从 0 搭一个企业级 LLM 网关，覆盖鉴权、计费、限流和渠道管理。

@@ -1,0 +1,13 @@
+{
+  "name": "botmux-ch05-examples",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun run keeper.test.ts && bun run web-term.test.ts && bun run gates.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0",
+    "typescript": "^5.6.0"
+  }
+}

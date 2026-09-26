@@ -14,7 +14,7 @@ last_synced: "2026-08-02"
 
 ## 1. claude-tap
 
-[claude-tap](https://github.com/liaohch3/claude-tap) 是 AI coding agent 的本地流量记录器。你照常用 Claude Code、Codex、Gemini CLI 干活，它在背后录下这些 CLI 和上游 LLM 之间的真实 HTTP 流量：完整的 system prompt、对话历史、工具 schema、工具调用、流式响应、token 用量。会话结束后生成一个单文件 HTML viewer，相邻两次请求之间还能看结构化 diff。
+[claude-tap](https://github.com/liaohch3/claude-tap) 是 AI coding agent 的本地流量记录器。你照常用 Claude Code、Codex、Gemini CLI 干活，它在背后录下这些 CLI 和上游 LLM 之间的真实 HTTP 流量：完整的 system prompt、对话历史、工具 schema、工具调用、流式响应、token 用量。记录存进本机的 SQLite，用自带的 dashboard 按会话浏览，也能导出成单文件 HTML，相邻两次请求之间还能看结构化 diff。
 
 调试 agent 时，最麻烦的往往不是答案不对，而是看不到它到底发出去了什么：
 
@@ -43,7 +43,7 @@ claude-tap 把这些差异收在一条命令后面：敲 `claude-tap`，对使�
 git clone --depth 1 --branch v0.1.104 https://github.com/liaohch3/claude-tap.git
 ```
 
-路径都从 `claude_tap/` 这个 Python 包目录算起。项目约 1 万行 Python（含 viewer 内嵌的 5K 行 JS）。本文基于 tag `v0.1.104`（commit `1e6f4ed`）。本章三个最小实现的完整代码在 [`examples/04-claude-tap/`](../examples/04-claude-tap/)。
+路径都从 `claude_tap/` 这个 Python 包目录算起。项目约 1.1 万行 Python，另有 viewer 前端 JS 约 4.8K 行。本文基于 tag `v0.1.104`（commit `1e6f4ed`）。本章三个最小实现的完整代码在 [`examples/04-claude-tap/`](../examples/04-claude-tap/)。
 
 ## 2. 上手
 
@@ -54,30 +54,68 @@ uv tool install claude-tap      # 或 pip install claude-tap
 claude-tap --version            # claude-tap 0.1.104
 ```
 
-先装好要抓的 CLI 并完成登录。不带参数时，`claude-tap` 包装 Claude Code：在本地随机端口起一个反向代理，把 `ANTHROPIC_BASE_URL` 指向自己，再启动 `claude` 子进程。终端里会看到这样的日志：
+先装好要抓的 CLI 并完成登录。不带参数时，`claude-tap` 包装 Claude Code：在本地随机端口起一个反向代理，把 `ANTHROPIC_BASE_URL` 指向自己，再启动 `claude` 子进程。
+
+下面是我在 0.1.104 上实跑的输出。为了不花 token，上游换成了一个本地假服务（`--tap-target`），`claude` 换成了一个只发一次流式请求的脚本，数据库路径已截短：
 
 ```
-[Turn 1] → POST /v1/messages (model=claude-opus-4-7, stream=True, upstream=https://api.anthropic.com/v1/messages)
-[Turn 1] ← 200 stream done (3421ms, in=12847 out=482 cache_read=10100 cache_create=2747)
+$ claude-tap --tap-target http://127.0.0.1:18765 --tap-no-open --tap-no-update-check
+🌐 Dashboard: http://127.0.0.1:19527
+🔍 claude-tap v0.1.104 listening on http://127.0.0.1:32933
+📁 Trace session: e412feca-5237-4bb6-bf13-f43ed6a44eb4
+🗄️  Trace database: …/tap.db
+
+🚀 Starting Claude Code: claude --settings {"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:32933"}}
+   ANTHROPIC_BASE_URL=http://127.0.0.1:32933
+
+fake claude got: Hello, tap
+
+📋 Claude Code exited with code 0
+
+📊 Trace summary:
+   API calls: 1
+   Tokens: 12 in / 3 out
+   Session: e412feca-5237-4bb6-bf13-f43ed6a44eb4
+   Database: …/tap.db
+   Dashboard: http://127.0.0.1:19527
 ```
 
-一个 Turn 就是一次完整的请求和响应。`Ctrl-C` 退出后，它会写出 trace 和 viewer：
+child 运行期间终端上没有代理日志：claude 是全屏 TUI，代理往终端打印会把界面搅乱，所以每轮的 `[Turn 1] → POST /v1/messages …` 这类日志都写进了数据库的 `proxy_logs` 表（`cli.py:239`）。数据库默认在 `~/.local/share/claude-tap/` 下（5 节讲路径怎么定）。
+
+看结果有两种方式：
+
+```bash
+claude-tap dashboard                          # 按日期、client、模型浏览历史会话
+claude-tap export <session-id> -o out.html    # 导出单文件 HTML，可以直接发给同事
+claude-tap export <session-id> --format markdown
+```
+
+同一个会话导出成 Markdown，是这样的：
 
 ```
-✓ Saved trace: ./.traces/2026-06-09/trace_103412.jsonl
-✓ Viewer:      ./.traces/2026-06-09/trace_103412.html
-```
+## Turn 1
 
-用浏览器打开那个 HTML，就能看到每个 Turn 的 system prompt、messages、工具定义、重组后的响应和 token 用量。v0.1.75 起默认开启 live viewer，进程跑着时浏览器里就能实时看到当前请求。
+**Model**: `claude-test` | **Duration**: 155ms
+
+### User
+
+hi
+
+### Assistant
+
+Hello, tap
+```
 
 其他用法：
 
 ```bash
 claude-tap --tap-client codex                 # 换 client，还支持 gemini、kimi、cursor 等
 claude-tap --tap-client gemini -- -p "hello"  # -- 之后的参数原样透传给 client
-claude-tap --tap-no-launch --tap-port 8080    # 只起代理，自己去接
-claude-tap dashboard                          # 按日期、client、模型浏览历史会话
+claude-tap --tap-no-launch --tap-port 8080 --tap-host 127.0.0.1   # 只起代理
+ANTHROPIC_BASE_URL=http://127.0.0.1:8080 claude                   # 在另一个终端自己接
 ```
+
+用 `--tap-no-launch` 时要注意：这个模式默认监听 **0.0.0.0**，不是 127.0.0.1（`cli.py:689-692`，作者假设这时代理多半跑在远程机器上）。我实测 `ss -ltn` 看到的就是 `0.0.0.0:8080`，同一局域网的机器都能连上来，挡在前面的只有 4.1 节讲的路径白名单。只在本机用，就像上面那样显式加 `--tap-host 127.0.0.1`。
 
 所有 `--tap-*` 参数由 claude-tap 自己消费，其余全部透传。
 
@@ -105,19 +143,19 @@ graph TB
 
 图 4-1：一次请求从 child 进程到 trace 的路径
 
-代码量集中在代理、存储和适配三块：`forward_proxy.py` 1196 行，`trace_store.py` 1124 行，`cli_clients.py` 1050 行，`proxy.py` 780 行；本章重点讲的 `sse.py` 只有 302 行，`certs.py` 277 行。
+代码量集中在代理、存储和适配三块：`forward_proxy.py` 1196 行，`trace_store.py` 1124 行，`cli_clients.py` 1050 行，`proxy.py` 780 行。它还有一个 608 行的 `ws_proxy.py`，专门代理 Codex 这类走 WebSocket 的 client，和第 3 章 sub2api 的 HTTP 转 WS 桥可以对照着读。本章重点讲的 `sse.py` 只有 302 行，`certs.py` 277 行。
 
 表 4-1 是贯穿全项目的五个抽象。
 
 | 抽象 | 位置 | 职责 |
 |---|---|---|
-| `ClientConfig` | `cli_clients.py:68-100` | 一个 client 的全部适配策略 |
 | `CertificateAuthority` | `certs.py:183-277` | 本地 CA，按域名签发并缓存证书 |
 | `SSEReassembler` | `sse.py:11-302` | 把 SSE 碎片累积成完整响应 |
+| `ClientConfig` | `cli_clients.py:68-100` | 一个 client 的全部适配策略 |
 | `TraceWriter` | `trace.py:15-90` | 写 trace 并累加 token 统计 |
 | `TraceStore` | `trace_store.py:69+` | SQLite 持久化，带 schema 版本 |
 
-前三个分别对应策略、TLS、协议三层，也就是下面 4.3、4.1、4.2 三节。
+前三个依次对应下面 4.1、4.2、4.3 三节。
 
 ## 4. 核心模块
 
@@ -146,7 +184,7 @@ async def handler(request):
 **正向代理**：让 child 把所有 HTTPS 流量都交给代理，代理冒充上游完成 TLS 握手，解开后再转发。它要解决三件事：
 
 1. **让流量过来**：设 `HTTPS_PROXY`。Python 的 httpx 和 requests、Node.js 的 undici、Go 的 net/http、Rust 的 reqwest 默认都认它。
-2. **让 child 信任你的 CA**：每种运行时认的变量不同，Node.js 是 `NODE_EXTRA_CA_CERTS`，httpx 是 `SSL_CERT_FILE`，requests 是 `REQUESTS_CA_BUNDLE`，Codex 的 Rust 二进制是 `CODEX_CA_CERTIFICATE`。
+2. **让 child 信任你的 CA**：每种运行时认的变量不同，Node.js 是 `NODE_EXTRA_CA_CERTS`，httpx 是 `SSL_CERT_FILE`，requests 是 `REQUESTS_CA_BUNDLE`。Codex 的 Rust 二进制认 `CODEX_CA_CERTIFICATE`，这是 Codex 自己定义的变量，别的 Rust 程序不认。
 3. **解开 TLS**：收到 CONNECT 后，用一张以目标域名签发的证书应答握手。
 
 图 4-2 是一次 CONNECT 隧道的过程。
@@ -183,7 +221,7 @@ child 肯接受代理现签的证书，前提是它信任了代理的 CA，所�
 
 反向代理（`proxy.py:465` 起）在上面那几行的基础上多做了三件事：
 
-- **路径白名单**：`ALLOWED_PATH_PREFIXES`（`proxy.py:89-119`）只放行 `/v1/messages`、`/v1/chat/completions` 等 LLM 路径，其余返回 404。代理虽然只绑 127.0.0.1，同机其他进程照样能扫它。
+- **路径白名单**：`ALLOWED_PATH_PREFIXES`（`proxy.py:89-119`）只放行 `/v1/messages`、`/v1/chat/completions` 等 LLM 路径，其余返回 404。默认只绑 127.0.0.1 时，同机其他进程照样能扫它；`--tap-no-launch` 默认绑 0.0.0.0 时，它是局域网里唯一的一道护栏。
 - **`strip_path_prefix`**：Codex 的 OAuth 请求走 `chatgpt.com/backend-api/codex/...`，环境变量给的 base URL 却带着 `/v1`，要剥掉。
 - **流式分支**：流式响应不能 `await resp.read()` 一次读完，4.2 节展开。
 
@@ -213,7 +251,9 @@ except ValueError:
     san_names.append(x509.DNSName(hostname))     # 域名用 DNSName
 ```
 
-签好的证书按域名缓存在进程内（`_host_cache`），因为一次 RSA-2048 生成密钥在 macOS 上要 100ms 以上，不能每次握手都签。
+签好的证书按域名缓存在进程内（`_host_cache`），因为每张 host 证书都要新生成一把 RSA-2048 密钥。我在一台 4 核 x86 Linux 上连生成 20 把，中位数 53ms，最慢 112ms，每次握手都签就太慢了。
+
+这套签发有两个边界，自己实现时要补上：每张证书只签一个名字，没有通配符，也不合并多个 SAN；CONNECT 的目标按最后一个冒号切出主机名（`forward_proxy.py:317`），IPv6 字面量带着方括号（`[::1]`），`ip_address()` 解析失败，会被当成域名签出一张 DNSName 为 `[::1]` 的证书。
 
 #### CA 只交给 child，不进系统证书库
 
@@ -298,7 +338,7 @@ sequenceDiagram
 
 图 4-3：转发和累积在同一个循环里先后发生
 
-#### 三种累积方式
+#### 用 SDK 还是手写
 
 | 做法 | 代价 |
 |---|---|
@@ -306,9 +346,13 @@ sequenceDiagram
 | 借上游 SDK 的流式 helper | 绑死 SDK 版本；多协议就要拉进多个 SDK；内部 API 不保证稳定 |
 | 手写增量累积器 | 要自己理解每种协议的流式语义 |
 
-同类项目里没有谁完整走第二条路。LiteLLM 是折中：OpenAI 系借官方 `openai` SDK 拿解析好的 chunk（`litellm/llms/openai/openai.py`），Anthropic 的 SSE 自己解析（`litellm/llms/anthropic/chat/handler.py` 的 `ModelResponseIterator`），最后用自己写的 `stream_chunk_builder`（`litellm/main.py`）累积。
+同类项目里没有谁完整走第二条路。LiteLLM 是折中：
 
-claude-tap 选了手写。`sse.py` 302 行，覆盖 Anthropic Messages、OpenAI Chat Completions、OpenAI Responses 三套协议，只依赖标准库。它的注释里写明了取代的是谁：`This replaces the anthropic SDK's accumulate_event() with a simple manual implementation`。
+- OpenAI 系借官方 `openai` SDK 拿解析好的 chunk（`litellm/llms/openai/openai.py`）；
+- Anthropic 的 SSE 自己解析（`litellm/llms/anthropic/chat/handler.py` 的 `ModelResponseIterator`）；
+- 最后用自己写的 `stream_chunk_builder`（`litellm/main.py`）累积。
+
+claude-tap 选了手写。`sse.py` 302 行，覆盖 Anthropic Messages、OpenAI Chat Completions、OpenAI Responses 三套协议，只依赖标准库。`SSEReassembler` 是个纯数据类：不发请求，不写文件，喂进字节、拿出快照，所以单测很好写。内部分三层，`feed_bytes` 切行，`_feed_line` 拼帧，`_accumulate` 按事件更新快照；支持一个新协议，只需在 `_accumulate` 里加分支。它的注释里写明了取代的是谁：`This replaces the anthropic SDK's accumulate_event() with a simple manual implementation`。
 
 #### 按行切帧
 
@@ -393,16 +437,20 @@ except (ConnectionError, asyncio.CancelledError):
 
 `iter_any()` 是有数据就给，不攒大小；换成 `iter_chunked(8192)` 会等满 8K 才给一次，凭空加延迟。
 
-先 `write` 再 `feed` 保证了 child 收到每个 chunk 的时间不受解析耗时影响，但它挡不住异常：`feed_bytes` 抛错，不管排在 write 前面还是后面都会跳出循环，外层也接不住。真正让解析错误不影响转发的，是 `_accumulate` 内部那层 `try/except Exception`（`sse.py:75` 起），未知事件和格式奇怪的 data 在那一层就被吞掉了。这是代理类工具的取向：宁可 trace 缺一块，也不能让 child 的流断掉。
+先 `write` 再 `feed`，保证 child 收到每个 chunk 的时间不受解析耗时影响。但这个顺序挡不住异常：`feed_bytes` 一旦抛错，循环照样中断，外层的 `except` 也不接这类异常。
+
+真正让解析错误不影响转发的，是 `_accumulate` 内部那层 `try/except Exception`（`sse.py:75` 起）。最常见的诱因是上游新增了一种事件类型或字段，这类数据在那一层就被吞掉了。代理类工具的取向是宁可 trace 缺一块，也不能让 child 的流断掉；代价是重组的 bug 不报错，只能事后从残缺的 trace 反推。
 
 外层那个 `except` 要分开看：
 
 - **`ConnectionError`**：child 断开时 `resp.write()` 会抛 `ConnectionResetError`，当作正常结束、保存已经录到的部分，合理。
 - **`CancelledError`**：吞掉它是 asyncio 的反模式。发起取消的一方（超时、服务关闭）以为任务停了，它却还在往下跑、写 trace。稳妥的写法是先保存已累积的部分，再重新 `raise`。
 
-还有一个副作用：child 一断开循环就退出，上游剩下的 SSE 不再读取，trace 里的响应是截断的，usage 也可能缺失。sub2api 在同样的位置做了相反的选择，child 断开后继续读完上游，为的是拿到完整 usage 用于计费（`backend/internal/service/gateway_service.go:5471`，v0.1.133）。要保证 trace 完整，可以学它。
+还有一个副作用：child 一断开循环就退出，上游剩下的 SSE 不再读取，trace 里的响应是截断的，usage 也可能缺失。sub2api（第 3 章）在同样的位置做了相反的选择，child 断开后继续读完上游，为的是拿到完整 usage 用于计费（`backend/internal/service/gateway_service.go:5471`，v0.1.133）。要保证 trace 完整，可以学它。
 
-另外，代理默认不保存原始事件列表，只存最后的快照。`SSEReassembler` 自身的 `store_events` 默认是 `True`（`sse.py:15`），但两种代理创建它时都传入 `--tap-store-stream-events` 的值，这个开关默认关闭（`proxy.py:592`、`forward_proxy.py:224`）。一次 Claude Code 对话动辄几千个 delta 事件，全存会让 trace 膨胀十几倍，排查重组结果时再打开。
+另外，代理默认只存最后的快照，不存原始事件列表。`SSEReassembler` 类本身的 `store_events` 默认是 `True`（`sse.py:15`）。但两种代理创建它时，传进去的是命令行开关 `--tap-store-stream-events` 的值，而这个开关默认关闭（`proxy.py:592`）。一次 Claude Code 对话动辄几千个 delta 事件，要排查重组结果时再打开。
+
+两份数据各有用途：`events` 是原始帧，用来排查重组出错在哪一帧；快照是存盘和展示用的完整消息。`reconstruct()` 只是把当前快照交出去，不改任何状态，流什么时候算结束由调用方决定，调用方在 `write_eof()` 之后才取。
 
 [`examples/04-claude-tap/mini_sse.py`](../examples/04-claude-tap/mini_sse.py) 是约 85 行的最小版，只认 Anthropic 的文本块和 `message_delta`，自带一段样本流：
 
@@ -447,7 +495,7 @@ graph LR
 
 #### ClientConfig 和 CLIENT_CONFIGS
 
-`ClientConfig`（`cli_clients.py:68-136`）有 14 个字段，核心的是这几个：
+`ClientConfig`（`cli_clients.py:68-100` 是字段，`:102-136` 是几个辅助方法）有 16 个字段，核心的是这几个（节选）：
 
 ```python
 @dataclass(frozen=True)
@@ -461,15 +509,17 @@ class ClientConfig:
     # 其余字段处理 keychain、配置文件覆盖、子命令改写等
 ```
 
-表里两个差异最大的条目（`cli_clients.py:139-152`、`:241-252`）：
+表里两个差异最大的条目（`cli_clients.py:139-149`、`:241-252`，有删节）：
 
 ```python
 CLIENT_CONFIGS: dict[str, ClientConfig] = {
     "claude": ClientConfig(
         cmd="claude", label="Claude Code",
-        base_url_env="ANTHROPIC_BASE_URL", base_url_suffix="",
+        base_url_env="ANTHROPIC_BASE_URL",
+        extra_base_url_envs=("ANTHROPIC_BEDROCK_BASE_URL",),
+        base_url_suffix="",
         default_target="https://api.anthropic.com",
-        nesting_env_keys=("CLAUDECODE",),     # 避免被识别成嵌套调用
+        nesting_env_keys=("CLAUDECODE", "CLAUDE_CODE_SSE_PORT"),  # 避免被识别成嵌套调用
         inject_settings_env=True,             # 变量也写进 --settings
     ),
     "agy": ClientConfig(                      # Antigravity
@@ -478,8 +528,9 @@ CLIENT_CONFIGS: dict[str, ClientConfig] = {
         default_target="https://daily-cloudcode-pa.googleapis.com",
         default_proxy_mode="forward",
         auto_trust_ca_macos=True,
+        forward_base_url_envs=("CLOUD_CODE_URL",),
     ),
-    # ... 其余 10 个
+    # ... 其余 10 个；每个条目都省略了 install_url，agy 还省略了一个路径白名单字段
 }
 ```
 
@@ -537,7 +588,7 @@ claude-tap 给这两个变量的文件里只有自己的 CA（`cli_clients.py:32
 
 **hop-by-hop 头的清单要自己维护。** aiohttp 不替你过滤，`proxy.py:33-44` 自己写了一个 `HOP_BY_HOP` frozenset：`Connection`、`Keep-Alive`、`Proxy-Authenticate`、`Proxy-Authorization`、`TE`、`Trailers`、`Transfer-Encoding`、`Upgrade`。这 8 个头只对单跳连接有意义（RFC 9110 第 7.6.1 节）。原样转发会出错，比如把上游的 `Transfer-Encoding: chunked` 抄给 child，而本地实际带的是 `Content-Length`，child 收到的帧就自相矛盾。转发请求、回传响应、写 trace 都要过这张表。
 
-**敏感头只留前缀。** `filter_headers(headers, redact_keys=True)`（`proxy.py:69-80`）写 trace 时，`Authorization` 和 `x-api-key` 只保留值的前 12 个字符，`Cookie` 等整个换成 `***`。完全擦除，事后认不出用的是哪把 key；完全保留，trace 一外传就泄露。但 12 个字符是从整个头的值算起的：`Bearer sk-abc123def456` 留下来是 `Bearer sk-ab`，属于 key 本身的只有 5 个字符；`sk-ant-api03-...` 留下来刚好是固定前缀，区分不了同类型的两把 key。自己写日志脱敏时，先剥掉 `Bearer ` 这类前缀，再按 key 的格式决定留多少。
+**敏感头只留前缀。** `filter_headers(headers, redact_keys=True)`（`proxy.py:69-80`）写 trace 时，`Authorization` 和 `x-api-key` 只保留值的前 12 个字符，`Cookie` 等整个换成 `***`。完全擦除，事后认不出用的是哪把 key；完全保留，trace 一外传就泄露。但 12 个字符是从整个头的值算起的：`Bearer sk-abc123def456` 留下来是 `Bearer sk-ab`，属于 key 本身的只有 5 个字符。第 2 节那次实跑里，假 key `sk-ant-api03-FAKEKEY…` 存进数据库后是 `sk-ant-api03...`，刚好是 Anthropic key 的固定前缀，区分不了同类型的两把 key。自己写日志脱敏时，先剥掉 `Bearer ` 这类前缀，再按 key 的格式决定留多少。
 
 **让上游不压缩。** `proxy.py:564` 把 child 的 `Accept-Encoding: gzip, br, zstd` 改成 `identity`。这样解析 SSE 时不用处理压缩，也绕开了个别 client 自带 zstd 解压实现有 bug 的问题。代价是上游到代理这段传的字节变多，SSE 本来就是小帧，影响不大。
 
@@ -557,7 +608,6 @@ claude-tap 给这两个变量的文件里只有自己的 CA（`cli_clients.py:32
 不适合的场景：
 
 - **生产环境抓流量**：没有访问控制，SQLite 在多进程写入下会锁。生产环境应该用 OpenTelemetry 加 SDK 埋点。
-- **大规模分析**：单库十几万条记录就开始变慢。
 - **CI**：要加 `--tap-no-live --tap-no-open --tap-no-update-check`，否则会尝试开浏览器、访问 PyPI。
 - **IDE 插件的流量**：claude-tap 包装的是 CLI 进程。Cursor CLI 能抓，Cursor 的 GUI 抓不到。
 - **OAuth 登录流程**：登录发生在浏览器和上游之间，与被包装的 child 无关。
@@ -567,16 +617,18 @@ claude-tap 给这两个变量的文件里只有自己的 CA（`cli_clients.py:32
 - **loopback 绕路**：只为兼容 macOS 上的 Python 3.11。
 - **`_accumulate` 里的 `except Exception: pass`**：只在"不能让 child 崩"的代理里合理，放进一般业务代码就是在藏 bug。
 - **写死 LLM 路径的白名单**：通用 HTTP 代理要改成可配置。
-- **SQLite 加 blob 去重存 trace**：这是为了支持 dashboard 的跨会话查询；一般日志追加写 JSONL 就够了。
-- **`~/.claude-tap/ca.pem` 这样的固定路径**：照抄 `CertificateAuthority` 时换成自己工具的目录，否则两个工具会共用一张 CA。私钥也要加密，或至少和证书分开存放。
+- **SQLite 加 blob 去重存 trace**：大块 JSON 按 sha256 存进 `record_blobs` 表，同一会话里重复的 system prompt、工具定义只存一份（`trace_store.py:938-949`）。这是为了支持 dashboard 的跨会话查询和控制库的体积；一般日志追加写 JSONL 就够了。
+- **`~/.claude-tap/ca.pem` 这样的固定路径**：照抄 `CertificateAuthority` 时换成自己工具的目录，否则两个工具会共用一张 CA。私钥 `ca-key.pem` 和证书放在同一个目录，而且是明文，照抄时至少给私钥加上密码。
 - **一上来就建策略表**：只有两三个 client 时，写两个分支更清楚，差异维度真多起来再换成表。
 
 ## 7. 自己做一个的顺序
 
 按这个顺序，每一步都能跑：
 
-1. **反向代理加 JSONL 记录**：只支持 Claude Code，先整包转发，能录下请求和响应。
-2. **加流式分支**：用 4.2 节的先转发再累积，接上 `mini_sse.py`，确认 `claude` 的输出不再卡顿，trace 里有完整消息。
+1. **反向代理加 JSONL 记录**：只支持 Claude Code，端口交给系统挑，把 `ANTHROPIC_BASE_URL` 指向自己再拉起 child，每个请求写一行 JSONL。
+2. **加流式分支**：用 4.2 节的先转发再累积，接上 `mini_sse.py`。
+
+这两步合起来就是 [`examples/04-claude-tap/mini_recorder.py`](../examples/04-claude-tap/mini_recorder.py)，80 行。我用它包一个真实的 CLI 之前，先拿假上游和假 client 跑过：流式响应边转发边累积，JSONL 里存下的是完整消息，`x-api-key` 只剩前 12 个字符。验收标准是：让 Claude Code 调一次工具，trace 里能看到 `tool_use` 块。`mini_sse.py` 还没累积工具参数，这一步要先把 4.2 节的 `input_json_delta` 分支补上。
 3. **加正向代理和 CA**：从 `mini_tap.py` 的 forward 模式开始。先用 `curl --proxy ... --cacert ...` 验证 CA 信任和隧道，再换 Node 的 `fetch`，最后换 httpx 和 reqwest。这一步主要时间花在调试上，可以同时开一个 `mitmproxy` 做对照。
 4. **加第二、第三个 client 时，再抽成策略表**：参考 `mini_strategy_table.py`，每加一个 client 尽量只改表；必须改 `run()` 时，先想想是不是该加一个字段。
 

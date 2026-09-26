@@ -6,7 +6,7 @@ based_on_commit: c13656d
 written_at: 2026-09-04
 learning_objectives:
   - 能按目标程序的能力，在参数隔离、环境隔离和应用包改写之间按从浅到深的顺序选择
-  - 能实现一个原生启动器，在不修改业务代码的情况下重定向数据目录、语言和代理配置
+  - 能实现一个原生启动器，在不修改业务代码的情况下重定向数据目录等进程环境
   - 能解释 macOS 应用身份、代码签名、entitlements 与 App Sandbox 的关系，并划清兼容性改造和安全隔离的边界
   - 能为带删除和提权能力的本地工具设计可信状态、路径约束、输入转义与失败回滚
 feishu_url: "https://fivwvysqdz.feishu.cn/wiki/BCQYwMfhciQASMkn1T4cl3K3nvh"
@@ -15,13 +15,13 @@ last_synced: "2026-09-04"
 
 ## 1. ATBClone
 
-[ATBClone](https://github.com/aitobox/ATBClone) 是一个 macOS 应用多开工具。给它一个 `/Applications/WeChat.app`，它会生成带独立名称、Bundle ID 和数据目录的第二个 `.app`。Chrome、Firefox 这类原生支持多配置目录的程序可以只做一层启动包装；微信、Telegram 等程序则需要复制应用包、改身份、替换入口，再重新签名。
+[ATBClone](https://github.com/aitobox/ATBClone) 是一个 macOS 应用多开工具。给它一个 `/Applications/WeChat.app`，它会生成带独立名称、Bundle ID 和数据目录的第二个 `.app`。Firefox 这类支持独立配置目录参数的程序可以只做一层启动包装（软分身）；微信、Telegram 等程序则要复制应用包、改身份、替换入口，再重新签名（硬分身）。
 
-应用多开难在身份和状态，复制文件只是第一步。以飞书为例：把 `.app` 复制一份再打开，第二个进程启动时会调用 Chromium 的 `ProcessSingleton::NotifyOtherProcessOrCreate()`，发现已有实例在跑，就通知第一个实例把窗口拉到前台，自己以退出码 34 退出（`src/atbclone/core/engines.py:557-566` 的注释记录了这个行为）。两个进程只要还共用同一个用户目录、同一个 Bundle ID 或同一把单实例锁，就会出现这种“打开了却没开出来”的情况，或者两个进程抢同一个数据库。反过来，改动应用包又会立刻破坏开发者签名，还可能让钥匙串、推送和系统权限失效。
+应用多开难在身份和状态，复制文件只是第一步。以飞书为例：把 `.app` 复制一份再打开，第二个进程什么窗口也不出就退了。原因在飞书内嵌的 Lark Framework 里：它自己实现了一套单实例逻辑，第二个进程启动时发现已有实例在跑，就通知第一个实例把窗口拉到前台，然后以退出码 34 退出（`src/atbclone/core/engines.py:557-566` 的注释记录了这个行为）。两个进程只要还共用同一个用户目录、同一个 Bundle ID 或同一把单实例锁，就会出现这种“打开了却没开出来”的情况，或者两个进程抢同一个数据库。反过来，改动应用包又会立刻破坏开发者签名，还可能让钥匙串、推送和系统权限失效。
 
 ATBClone 把这组冲突压进了一条流水线：先探测目标应用，再用 Recipe 选择克隆策略，最后生成新的应用包并登记生命周期。它不是安全沙盒，不少兼容性手段会主动拆掉原应用的安全边界。所以这个仓库既能看到怎么让闭源桌面程序多开，也能看到系统工具在哪些地方要格外小心。
 
-做 Agent 和开发工具的人会直接碰到这类问题。ATBClone 的内置 Recipe 里就有 Claude 桌面版、ChatGPT/Codex、VS Code、Zed：Claude 桌面版的规则除了隔离 `HOME`，还注入了 `CLAUDE_CONFIG_DIR`，Codex 的规则注入 `CODEX_HOME`（`src/atbclone/recipes/builtin/com.anthropic.claudefordesktop.yaml`、`com.openai.codex.yaml`），用来让两个账号的配置互不干扰。往外推一步，下面这些场景用的是同一组做法：
+做 Agent 和开发工具的人会直接碰到这类问题。ATBClone 的内置 Recipe 里就有 Claude 桌面版、ChatGPT/Codex、VS Code、Zed：Claude 桌面版的规则除了隔离 `HOME`，还注入了 `CLAUDE_CONFIG_DIR`，Codex 的规则注入 `CODEX_HOME`（`src/atbclone/recipes/builtin/com.anthropic.claudefordesktop.yaml`、`com.openai.codex.yaml`），用来让两个账号的配置各自存放。要注意的是，克隆时它会把 `~/.claude`、`~/.claude.json`、`~/.codex` 整份复制进分身的数据目录（`src/atbclone/core/engines.py:125-177`），所以分身一开始就是主账号的副本，登录凭据也在里面。往外推一步，下面这些场景用的是同一组做法：
 
 - 给一个桌面 Agent 开多个隔离的工作区；
 - 写一个要兼容几十种目标程序的安装器；
@@ -30,11 +30,17 @@ ATBClone 把这组冲突压进了一条流水线：先探测目标应用，再�
 
 本章讲其中四个可以带走的做法：按能力探测选策略、用原生启动器注入进程环境、改包后重建签名链、给带提权和删除能力的工具守住路径边界。
 
-路径都从仓库根目录算起。本文锁定 tag `v1.2.0`、commit `c13656d`。核心 Python 代码约 1.3 万行。
+路径都从仓库根目录算起。本文锁定 tag `v1.2.0`、commit `c13656d`。Python 代码约 1.3 万行，其中非 GUI 部分约 7800 行。
 
 ## 2. 五分钟跑起来
 
-ATBClone 只能在 macOS 上完成真实克隆。源码安装需要 Python 3.10 以上，硬分身还依赖 `clang`、`codesign`、`PlistBuddy` 和 LaunchServices（macOS 登记和打开 `.app` 的系统服务）。
+ATBClone 只能在 macOS 上完成真实克隆。源码安装实际需要 Python 3.12 以上：`pyproject.toml` 声明的是 3.10，但 `src/atbclone/core/engines.py:301` 在 f-string 表达式里用了反斜杠，这是 3.12 才允许的写法。在 3.11 下，`atbclone --help` 直接报错：
+
+```text
+SyntaxError: f-string expression part cannot include a backslash
+```
+
+另外，硬分身还依赖 `clang`、`codesign`、`PlistBuddy` 和 LaunchServices（macOS 登记和打开 `.app` 的系统服务）。
 
 ```bash
 git clone --branch v1.2.0 https://github.com/aitobox/ATBClone.git
@@ -48,16 +54,18 @@ pip install -e '.[dev]'
 
 ```bash
 atbclone doctor
-atbclone probe /Applications/Google\ Chrome.app
+atbclone probe /Applications/Firefox.app
 ```
 
-`probe` 不会修改应用。它读取 `Info.plist`、签名授权和 Framework 目录，还会扫描可执行文件中的字符串，寻找 `--user-data-dir`、`-profile` 等参数。确认策略后再创建分身：
+`probe` 不会修改应用。它读取 `Info.plist`、签名授权和 Framework 目录；对 Chromium、Electron、Firefox 以外的程序，还会扫描可执行文件中的字符串，寻找可用的数据目录参数（`src/atbclone/core/app_prober.py:149-151`）。确认策略后再创建分身：
 
 ```bash
-atbclone clone /Applications/Google\ Chrome.app \
-  --name Chrome-Work \
-  --data-dir "$HOME/ATBClone/Data/Chrome-Work"
+atbclone clone /Applications/Firefox.app \
+  --name Firefox-Work \
+  --data-dir "$HOME/ATBClone/Data/Firefox-Work"
 ```
+
+`probe` 的结论不一定等于 `clone` 实际采用的策略。`probe` 只看探测结果，`clone` 却优先使用内置 Recipe（`src/atbclone/cli/cmd_clone.py:64-65`）。Chrome 就是例子：探测会建议软分身，而内置规则在提交 `e5c9d4d` 里改成了 `hard_clone`，所以 `clone` 实际会复制并改写整个应用包。想强制走软分身，加 `--strategy soft_clone`。
 
 默认产物在 `~/ATBClone/Apps`，数据在 `~/ATBClone/Data`，不需要管理员权限。把 `--output-dir` 指到 `/Applications` 才会触发 macOS 管理员授权。学习源码时应先使用用户目录，并选择不含敏感数据的测试程序。
 
@@ -65,11 +73,11 @@ atbclone clone /Applications/Google\ Chrome.app \
 
 ```bash
 atbclone list
-atbclone update Chrome-Work
-atbclone remove Chrome-Work --keep-data
+atbclone update Firefox-Work
+atbclone remove Firefox-Work --keep-data
 ```
 
-仓库的非 GUI 测试可以在非 macOS 环境运行。本章检查的提交上，排除依赖 Toga 的 GUI 测试后共有 348 项通过。这个数字只能说明纯 Python 逻辑通过，不能替代 macOS 上的签名、Gatekeeper（打开应用时检查签名和来源的闸门）、TCC（管理摄像头、通讯录等隐私授权的系统组件）和实际启动测试。
+仓库的非 GUI 测试可以在非 macOS 环境运行。本章检查的提交上，用 Python 3.12 排除依赖 Toga 的 GUI 测试后共有 348 项通过。这个数字只能说明纯 Python 逻辑通过，不能替代 macOS 上的签名、Gatekeeper（打开应用时检查签名和来源的闸门）、TCC（管理摄像头、通讯录等隐私授权的系统组件）和实际启动测试。
 
 ## 3. 全景架构
 
@@ -122,6 +130,7 @@ ATBClone 先看目标程序自己支持哪种隔离方式，再决定改造得�
 | 路线 | 怎么隔离 | 优点 | 代价 |
 |---|---|---|---|
 | 启动参数 | 给原二进制传独立 profile 路径 | 不改原应用，签名不变 | 目标程序必须明确支持参数 |
+| 不用任何工具 | `open -n -a 应用 --args --user-data-dir=目录` | 零成本，适合临时试一次 | 每次手敲，Dock 里分不清是哪个实例 |
 | 环境变量 | 改 `HOME`、`TMPDIR` 等进程环境 | 对闭源程序也能尝试 | Cocoa API 和硬编码路径未必遵守环境变量 |
 | 应用包改写 | 复制 `.app`、改 Bundle ID 和入口 | Dock、LaunchServices、部分系统权限可分开识别 | 必须重签，兼容与安全代价最高 |
 
@@ -193,22 +202,26 @@ plan = planner.choose(
 
 最小启动器确实只有几行：导出环境变量，然后 `exec` 原二进制。问题是 macOS 把 `.app` 的入口当成真正的可执行文件参与签名和启动。某些应用还会检查入口类型、派生子进程，或者依赖通知中心和菜单栏识别当前二进制。Shell wrapper 的兼容性很快到顶。
 
-ATBClone 最终选择运行时编译一个 C 启动器，产物是 Mach-O（macOS 的可执行文件格式）二进制。软分身的启动器直接 `execv()` 原应用入口；Chromium/Electron 的硬分身先把原入口改名为 `.bin`，再让同名启动器执行它（`src/atbclone/core/engines.py:450-540`、`893-912`）。
+ATBClone 实际用了三种入口，按目标程序的类型选：
 
-软分身有个前提要先说清。它的启动器 `execv` 的是原应用包里的二进制，而 macOS 按可执行文件所在的位置确定 main bundle。进程起来以后，`NSBundle.mainBundle` 仍是原来那个 `.app`，程序读到的 Bundle ID 也是原应用的。分身包 `Info.plist` 里改过的名称和 Bundle ID（`engines.py:531-533`），只影响 Dock 和 LaunchServices 怎么显示、登记这个入口；按 Bundle ID 做的单实例检测和偏好读写都挡不住。所以软分身只适合 Chromium、Firefox 这类能靠参数把数据目录分开的程序，其余程序得走复制二进制的硬分身。
+- **软分身**：运行时编译一个 C 启动器（产物是 Mach-O，macOS 的可执行文件格式），它直接 `execv()` 原应用包里的二进制（`src/atbclone/core/engines.py:450-540`）。
+- **Chromium / Electron 硬分身**：先把分身包里的原入口改名为 `.bin`，再放一个同名的 C 启动器去执行它（`engines.py:893-912`）。
+- **Cocoa 硬分身**（且 Recipe 没有启动参数时）：不换入口，而是往分身包里的二进制副本加一个启动时自动运行的动态库，由它在程序初始化前设置环境变量（`engines.py:883-892`）。
+
+这三种入口的差别，决定了分身能不能拥有自己的身份。结论先说：软分身的进程仍然认为自己是原应用。macOS 按可执行文件所在的位置确定 main bundle，软分身 `execv` 的是原应用包里的二进制，所以进程起来后 `NSBundle.mainBundle` 仍是原来那个 `.app`，读到的 Bundle ID 也是原应用的。分身包 `Info.plist` 里改过的名称和 Bundle ID（`engines.py:531-533`）只影响 Dock 和 LaunchServices 怎么显示、登记这个入口，挡不住按 Bundle ID 做的单实例检测和偏好读写。两种硬分身执行的都是分身包里的二进制，main bundle 才是分身自己。这也解释了为什么 Chrome 的内置规则后来从软分身改成了硬分身。
 
 | 启动器形态 | 生成成本 | 系统兼容性 | 修改原应用 |
 |---|---:|---:|---:|
 | Shell wrapper | 最低 | 较低 | 软分身可不改 |
 | 原生 C launcher | 需要 `clang` | 较高 | 硬分身要替换入口 |
-| 动态库构造器 | 需要改 Mach-O load command | 取决于目标二进制 | 会改原二进制副本 |
+| 动态库构造器（Cocoa 硬分身在用） | 需要改二进制副本的加载命令 | 取决于目标二进制 | 会改原二进制副本 |
 
-启动器构造器把 Recipe 中的环境变量写成 `setenv()`，把启动参数与用户传入的 `argv` 合并，最后调用 `execv()`。核心位于 `src/atbclone/core/engines.py:251-343`。
+C 启动器把 Recipe 中的环境变量写成 `setenv()`，把启动参数与用户传入的 `argv` 合并，最后调用 `execv()`。核心位于 `src/atbclone/core/engines.py:251-343`。
 
 ```c
 int main(int argc, char *argv[]) {
-    setenv("HOME", "/Users/me/ATBClone/Data/WeChat2/Home", 1);
-    setenv("TMPDIR", "/Users/me/ATBClone/Data/WeChat2/Tmp", 1);
+    setenv("HOME", "/Users/me/ATBClone/Data/Chrome-Work/Home", 1);
+    setenv("TMPDIR", "/Users/me/ATBClone/Data/Chrome-Work/Tmp", 1);
 
     char *new_argv[] = {argv[0], "--user-data-dir=...", NULL};
     execv(real_bin, new_argv);
@@ -216,7 +229,7 @@ int main(int argc, char *argv[]) {
 }
 ```
 
-上面是 `CloneEngine._build_c_launcher_compile_cmd()` 的教学化缩写。真正代码还保存原始 `HOME` 到 `REAL_USER_HOME`，供白名单软链接使用。
+上面是 `CloneEngine._build_c_launcher_compile_cmd()` 的示意缩写，不能直接编译。真正代码还保存原始 `HOME` 到 `REAL_USER_HOME`，供白名单软链接使用。
 
 ```mermaid
 sequenceDiagram
@@ -237,7 +250,7 @@ sequenceDiagram
 
 把 `HOME` 指向另一个目录，只会影响愿意读取这个环境变量的代码。目标程序仍然以当前用户身份运行，理论上可以访问该用户原本有权访问的其他文件。它也可能通过 Foundation API、容器路径或绝对路径绕过 `HOME`。
 
-ATBClone 还会为伪 Home 链接真实的 `Library/Keychains`，部分 Recipe 甚至链接 `.ssh`。微信规则就是如此（`src/atbclone/recipes/builtin/com.tencent.xinWeChat.yaml:1-11`）。这样做能减少登录或 Git 功能失效，却把最敏感的宿主凭据重新暴露给分身。
+ATBClone 还会为伪 Home 链接真实的 `Library/Keychains`，部分 Recipe 甚至链接 `.ssh`。微信规则就是如此（`src/atbclone/recipes/builtin/com.tencent.xinWeChat.yaml:1-11`）。加上第 1 节说的 Claude、Codex 配置整份复制，分身手里其实握着和主账号相同的凭据。这样做能减少登录或 Git 功能失效，却把最敏感的宿主凭据重新交给了分身。
 
 所以启动器做的是状态分流，提供不了安全隔离。真正需要安全边界时，应使用 App Sandbox、独立 macOS 用户、容器或虚拟机。启动器适合解决多账号和文件锁冲突，不适合运行不可信代码。
 
@@ -279,7 +292,12 @@ flowchart TD
 
 这一步解决的是新身份拿不到原团队专属 entitlement 的签名问题。代价也很直接：分身不再受原 App Sandbox 约束，访问范围可能扩大；与此同时，钥匙串组、推送、iCloud 和应用组功能可能失效。
 
-仓库还提供两类更深的二进制补丁：一类针对开篇说的飞书单实例问题，把框架里调用 `NotifyOtherProcessOrCreate` 的那条 `bl` 指令改成 `mov w0, #0; nop`，让每份副本都当自己是主实例（`engines.py:557-566`）；另一类修改 CEF 的 Seatbelt 和 GPU 相关分支（`src/atbclone/core/engines.py:556-677`）。这些补丁依赖指令和字节模式，目标应用升级后可能匹配失败，也可能命中错误位置。
+仓库还提供两类更深的二进制补丁，只在 Recipe 打开开关或目标是飞书时才会执行：
+
+- 一类针对开篇说的飞书单实例问题：在内嵌框架里找到那次“通知已有实例”的函数调用，把调用处和被调函数本身都改成直接返回 0，让每份副本都认为自己是主实例（`engines.py:557-626`）。改的是被调函数本身，所以框架里所有调用它的地方都受影响，不止启动那一处。
+- 另一类修改 CEF 的 Seatbelt 和 GPU 相关分支（`src/atbclone/core/engines.py:556-677`）。
+
+这些补丁靠字节模式搜索定位，目标应用升级后可能匹配失败，也可能命中错误位置。
 
 安全判断应该分成两问：
 
@@ -311,6 +329,8 @@ flowchart LR
 
 更稳的实现要在执行前重新建立边界：
 
+下面是示意代码，`UnsafePath` 是自定义异常：
+
 ```python
 def assert_managed_path(path: Path, roots: list[Path]) -> Path:
     resolved = path.expanduser().resolve(strict=False)
@@ -321,7 +341,7 @@ def assert_managed_path(path: Path, roots: list[Path]) -> Path:
     return resolved
 ```
 
-还应补四层保护：状态文件权限固定为 `0600`；代理密码不写入摘要；更新使用临时目录构建，校验成功后原子替换；提权时传结构化参数或固定脚本，不把用户输入拼进整段 root shell。
+还应补四层保护：状态文件权限固定为 `0600`；代理密码不写入摘要（现在 `proxy_summary` 存的是带用户名密码的完整代理 URL，`update` 会读它，`list` 会原样打印，见 `src/atbclone/recipes/models.py:14-17`、`src/atbclone/core/clone_inspector.py:130-134`）；更新使用临时目录构建，校验成功后原子替换；提权时传结构化参数或固定脚本，不把用户输入拼进整段 root shell。
 
 引擎里的路径大多用 `shlex.quote` 转义过，显示名称和 Bundle ID 却是拼进双引号 Shell 片段的。问题分三步：
 
@@ -329,7 +349,7 @@ def assert_managed_path(path: Path, roots: list[Path]) -> Path:
 2. 目标应用的 Bundle ID 来自它自己的 `Info.plist`，也会被插进构建脚本（`engines.py:934-954`）。
 3. 产物写进 `/Applications` 时，整段脚本以管理员权限运行。
 
-三步连起来，克隆一个不可信的应用，就等于让它的 `Info.plist` 以管理员身份执行命令。
+三步连起来，克隆一个不可信的应用，就等于让它的 `Info.plist` 以管理员身份执行命令。显示名默认取自目标应用 `Info.plist` 里的 `CFBundleDisplayName`（`src/atbclone/core/app_inspector.py:74`），所以第 1 步的输入同样可能来自目标应用本身。在 Python 3.12 下可以复现：把显示名设成含 `$()` 的字符串，生成的命令执行后，括号里的命令确实会被执行。
 
 Shell quoting 只能保护被正确放进一个 Shell 参数的位置。只要代码先拼模板、再让 `shell=True` 解释整段文本，就要逐个追踪数据来自哪里、落在哪种语法上下文。路径、PlistBuddy 命令、C 字符串和 AppleScript 是四种不同上下文，不能靠一个 escape 函数通吃。
 
@@ -362,7 +382,7 @@ ATBClone 适合个人在受控 Mac 上做多账号、测试配置和应用兼容
 
 一个教学版不需要二进制补丁、动态库注入和管理员权限。把范围限制为支持 profile 参数的应用，约一两百行 Python 就能完成。
 
-第一步只支持两种适配器：Chromium 的 `--user-data-dir` 和 Firefox 的 `-profile`。第二步读取 `Info.plist`，生成新的 Bundle ID 与轻量 `.app`。第三步写一个启动脚本或预编译的小型 launcher。最后把记录写入只允许当前用户读取的 JSON 文件。
+第一步只支持两种适配器：Chromium 的 `--user-data-dir` 和 Firefox 的 `-profile`。按 4.2 节的分析，这种软分身的进程身份仍是原应用，只适合能靠参数分开数据目录的程序。下面是示意代码，`inspect_plist`、`Launcher` 等都是待实现的函数和类：第二步读取 `Info.plist`，生成新的 Bundle ID 与轻量 `.app`。第三步写一个启动脚本或预编译的小型 launcher。最后把记录写入只允许当前用户读取的 JSON 文件。
 
 ```python
 def build_soft_clone(source_app: Path, dest_app: Path, data_dir: Path):
@@ -388,6 +408,7 @@ def build_soft_clone(source_app: Path, dest_app: Path, data_dir: Path):
 
 ## 8. 延伸阅读
 
+- [WeChatTweak](https://github.com/sunnyyoung/WeChatTweak)：同样解决微信多开，走的是另一条路——原地给应用打补丁，不复制应用包。和 ATBClone 的复制加重签对照着看，能看清两条路各自丢掉了什么。
 - [Apple Code Signing Guide](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/Introduction/Introduction.html)：理解为什么改动 `Info.plist`、资源或 Mach-O 后必须重新签名，以及签名身份和完整性如何绑定。
 - [App Sandbox Design Guide](https://developer.apple.com/library/archive/documentation/Security/Conceptual/AppSandboxDesignGuide/AboutAppSandbox/AboutAppSandbox.html)：补齐 Sandbox、entitlements 与最小权限模型。读完再回看 `strip_sandbox`，其代价会更清楚。
 - [Electron app.getPath](https://www.electronjs.org/docs/latest/api/app#appgetpathname)：理解 Electron 应用的数据目录从哪里来，也能看出命令行参数之外还有哪些适配入口。

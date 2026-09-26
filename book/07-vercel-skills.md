@@ -18,11 +18,9 @@ last_synced: "2026-08-04"
 
 [vercel-labs/skills](https://github.com/vercel-labs/skills) 是 `npx skills` 这个命令背后的 CLI，也就是 skill 的包管理器。给它一个 GitHub 仓库、一个 git 地址、一个内网 URL 或者一个本地路径，它把里面的 Agent Skill 装进你机器上的 AI 编程工具。
 
-它面对的局面有点反常。Agent Skills 这个格式没有中央仓库，没有版本号，也没有 manifest 文件，却已经被 70 多个 agent 产品支持。安装、更新、锁版本、私有分发，包管理器的这四件活儿，在一个没有 registry 的生态里怎么干？这个 CLI 是目前事实上的答案。
+Agent Skills 这个格式没有中央仓库，没有版本号，也没有 manifest 文件，却已经被 70 多个 agent 产品支持。安装、更新、锁版本、私有分发，包管理器的这四件活儿，在一个没有 registry 的生态里怎么干？这个 CLI 是目前事实上的答案。
 
-### 1.1 团队自建 skill 库的第一天
-
-你要在公司内部推 skill，把代码评审规范、发布流程、内部 API 用法各写成一个 skill，让全组人的 Claude Code、Cursor、Codex 都用上。第一天就会撞上四个问题：
+设想你要在公司内部推 skill，把代码评审规范、发布流程、内部 API 用法各写成一个 skill，让全组人的 Claude Code、Cursor、Codex 都用上。第一天就会撞上四个问题：
 
 - **格式怎么写才算合规？** 网上的 SKILL.md 五花八门，有人写 `version`，有人写 `tags`。哪些是规范里的字段，哪些是各家私加的？
 - **版本怎么控？** 规范里压根没有 version 字段。那"这个 skill 升级了"是靠什么发现的？
@@ -31,7 +29,7 @@ last_synced: "2026-08-04"
 
 四个问题这个 CLI 都有答案，但成色不一样。格式和多目录这两件做得干净；版本控制只做了一半，它能告诉你上游变了，不能告诉你装到的东西对不对；私有分发的方案在企业环境里有三个坑，项目文档一个都没提。
 
-### 1.2 五个能搬走的做法
+读完这一章，能带走五个做法：
 
 1. **把一份规范拆三层看。** 规范文档、参考校验器、真实实现，三者在字段白名单、命名字符集、目录名匹配上互不一致。给团队定资产格式（prompt、评测集、知识库条目）时，先说清哪一层说了算。
 2. **没有版本号的版本控制。** 用内容哈希加锁文件代替版本号。边界要记住：哈希能发现漂移，保证不了完整性，Go modules 的 dirhash 加 sumdb 才把这道题做完。
@@ -137,11 +135,20 @@ graph TB
 
 最后那一行的命名差一个字母，全章会反复出现，记一个助记：**带 s 的那个进 git**。
 
+按阶段找源码：
+
+| 阶段 | 文件 |
+|---|---|
+| 解析来源、取内容 | `source-parser.ts`、`git.ts`、`blob.ts`、`providers/wellknown.ts` |
+| 发现与安装 | `skills.ts`、`installer.ts` |
+| 锁与更新 | `local-lock.ts`、`skill-lock.ts`、`update.ts` |
+| 平台适配 | `agents.ts`，以及回写文档的 `scripts/sync-agents.ts` |
+
 ## 4. 核心模块
 
 ### 4.1 规范：SKILL.md 到底规定了什么
 
-#### 4.1.1 一个格式，三份互不一致的标准
+#### 一个格式，三份互不一致的标准
 
 规范只强制两个字段：`name` 和 `description`，其他全是可选。
 
@@ -179,7 +186,7 @@ ALLOWED_FIELDS = {
 
 六个字段，两个必填。`license` 写授权，`compatibility` 写环境依赖（比如需要 Python 3.14+ 和 uv），`allowed-tools` 是实验性的工具预授权，`metadata` 是留给客户端塞私货的自由键值对。
 
-表里第三行回答了"版本号写哪"：规范里没有顶层 `version` 字段，写了就不合规。唯一合法的放法是塞进 `metadata`，规范文档自己的示例就是这么写的：
+"顶层写 `version`"那一行回答了版本号写哪：规范里没有顶层 `version` 字段，写了就不合规。唯一合法的放法是塞进 `metadata`，规范文档自己的示例就是这么写的：
 
 ```yaml
 name: pdf-processing
@@ -192,7 +199,7 @@ metadata:
 
 但要清楚：`metadata.version` 对所有工具都没有语义。没有人会因为它变了而提示你更新，也没有人会因为它是 `2.0` 就拒绝加载。它是给人看的注释。真正驱动更新的是内容哈希，那是 4.3 节的事。
 
-表里第四、五行合起来是中文团队会立刻踩到的坑。参考校验器明确支持 i18n（`validator.py:28-29` 的注释写着 "Skill names support i18n characters"），逐字符判断用的是 Python 的 `str.isalnum()`，中文字符返回 `True`。所以 `name: 团队评审` 在规范层面合法。
+`name` 字符集和"`name` 等于目录名"这两行，合起来是中文团队会立刻踩到的坑。参考校验器明确支持 i18n（`validator.py:28-29` 的注释写着 "Skill names support i18n characters"），逐字符判断用的是 Python 的 `str.isalnum()`，中文字符返回 `True`。所以 `name: 团队评审` 在规范层面合法。
 
 但 CLI 安装时会先净化目录名（`src/installer.ts:50-65`）：
 
@@ -216,9 +223,9 @@ export function sanitizeName(name: string): string {
 
 装第二个中文 skill，会覆盖第一个。所以内部 skill 的 `name` 一律用 ASCII kebab-case，中文写进 `description` 和正文。这条应该写进团队规范的第一行。
 
-#### 4.1.2 description 是唯一的触发器
+#### description 是唯一的触发器
 
-规范只强制两个字段，很容易让人以为写 skill 很随意。恰恰相反。正因为只有两个字段，这两个字段的写法就是全部。
+规范只强制两个字段，所以这两个字段的写法就是全部。
 
 原因在规范定义的加载机制。agent 不会把所有 skill 的正文都塞进上下文，而是分三段按需加载：
 
@@ -256,11 +263,11 @@ mentions PDFs, forms, or document extraction.
 
 区别在于后者写了具体的触发词：PDF、表单、文档抽取。agent 正是靠这些词把任务和 skill 对上的。内部 skill 没人用，常见原因是 description 写得太抽象。
 
-第一段那个"每个约 100 tokens"是条真实的预算约束，对团队决策影响最大。它对每一次对话都生效：装 50 个 skill，就是每轮对话固定烧 5K tokens 上下文。内部 skill 库不是越大越好，超过某个数量就该按项目拆分安装，而不是全组全局装。
+第一段那个"每个约 100 tokens"对每一次对话都生效：装 50 个 skill，就是每轮对话固定烧 5K tokens 上下文。内部 skill 库不是越大越好，超过某个数量就该按项目拆分安装，而不是全组全局装。
 
 正文那一段的建议是低于 500 行，细节放进 `references/` 让 agent 按需读。目录约定是 `SKILL.md` 加可选的 `scripts/`、`references/`、`assets/`，引用其他文件用相对路径，且规范明确建议只深一层。agent 顺着链子读三层文件的成本，比一开始就写在正文里还高。
 
-#### 4.1.3 规范为什么故意只有六个字段
+#### 规范为什么故意只有六个字段
 
 六个字段，且明确不打算长大。`agentskills/agentskills` 的 `CONTRIBUTING.md` 写得很直白：
 
@@ -287,7 +294,7 @@ mentions PDFs, forms, or document extraction.
 
 代价也很明确：没有版本、没有依赖、没有中央仓库，这三件事全部被推给了下游工具去解决，也就是这个 CLI。
 
-规范自身也没有版本号：`agentskills/agentskills` 到 2026 年 7 月共 130 个 commit、零个 tag，规范正文改过 15 次，合进 main 就算发布。其中 commit `6868401`（2026-05-16）才把正文里名字的字符集从 `a-z` 补成 `a-z`、`0-9`，此前正文和它上方的摘要表格在这一点上矛盾了五个月。参考校验器 `validator.py` 在同一时期一次没改过。
+规范自身也没有版本号：到 2026 年 7 月共 130 个 commit、零个 tag，合进 main 就算发布。正文里 `name` 字符集的写法和上方摘要表格矛盾了五个月，直到 commit `6868401` 才补上数字；同期参考校验器一次没改。
 
 所以给团队定内部格式时，散文照写，但要在开头标注"以校验器为准"，并且把那个校验器做成生产可用的、挂进 CI 的东西，而不是像 `skills-ref` 那样自称仅供演示。
 
@@ -383,7 +390,7 @@ npm 靠 registry 上的版本列表判断有没有新版。这里没有 registry
 | clone 下来算文件哈希 | 比对内容 | 准确，但每次检查都要 clone 一遍全仓库 |
 | 取远端目录树的哈希 | 比对目录 SHA | 准确且免下载，但依赖平台提供 tree API |
 
-#### 4.3.1 远端 tree SHA 和本地 sha256
+#### 远端 tree SHA 和本地 sha256
 
 CLI 后两条路都走。检查全局 skill 有没有更新时，GitHub 来源走 Trees API，一次调用拿到整棵仓库树，从里面挑出目标目录的 tree SHA（`src/blob.ts:225-247`）：
 
@@ -423,7 +430,7 @@ export async function computeSkillFolderHash(skillDir: string): Promise<string> 
 }
 ```
 
-这段代码看着像一个标准的确定性哈希，拿去和 Go 的 dirhash 比一遍，会发现三处可以改进，而且都不是吹毛求疵。
+这段代码看着像一个标准的确定性哈希，拿去和 Go 的 dirhash 比一遍，会发现三处可以改进。
 
 **路径和内容之间没有分隔符。** `hash.update(path)` 之后直接 `hash.update(content)`，两个文件之间也没有边界标记。我复刻这段算法跑了一次：
 
@@ -443,7 +450,7 @@ B 的哈希 = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
 
 这三条不影响日常使用，文件名撞车的概率极低，skill 也很少改权限位。但如果你要照抄这段代码去做自己的内容寻址，把这三处改掉。
 
-#### 4.3.2 两个锁文件，两种职责，以及哈希保证不了的事
+#### 两个锁文件，两种职责，以及哈希保证不了的事
 
 同一件事在项目级和用户级的需求不同，所以有两个格式不同的锁文件：
 
@@ -457,7 +464,7 @@ B 的哈希 = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
 | GitHub 来源存的是 | sha256（快照服务算好或本地算） | git tree SHA |
 | 其他来源存的是 | 本地 sha256 | 本地 sha256，well-known 为空 |
 
-全局锁的哈希分派在 `src/add.ts:1828-1838`，项目锁在 `add.ts:1872-1875`。项目锁用的始终是 4.3.1 那段 sha256 算法，走快路径时由快照服务按同一算法算好返回。
+全局锁的哈希分派在 `src/add.ts:1828-1838`，项目锁在 `add.ts:1872-1875`。项目锁存的始终是路径加内容的 sha256：从磁盘装时用上面那段 `computeSkillFolderHash` 算；走快路径时直接用快照服务返回的哈希，只有文件被过滤掉一部分时才由客户端按同一写法重算（`src/blob.ts:425-432`、`:582-583`）。服务端怎么算不在这个仓库里。
 
 所以同一个 GitHub skill，两个锁里存的是两种哈希，而且互不可比：tree SHA 是 git 的 sha1 对象哈希，`computedHash` 是路径加内容的 sha256。全局锁能免下载地问远端变了没有，却没法离线验证本地文件；项目锁正好反过来。
 
@@ -471,7 +478,7 @@ Two branches adding different skills produce non-overlapping JSON keys
 that git can auto-merge cleanly.
 ```
 
-不写时间戳、按名字排序，两条合起来的效果是两个人在各自分支上各装一个 skill，合并时 git 能自动 merge。带上 `updatedAt` 的话，每次安装都会改动时间戳字段，冲突率陡增。做法是对的，但不是这个项目的独创：`package-lock.json`、`Cargo.lock`、`go.sum` 全都不写时间戳、全都排序。
+不写时间戳、按名字排序，两条合起来的效果是两个人在各自分支上各装一个 skill，合并时 git 能自动 merge。带上 `updatedAt` 的话，每次安装都会改动时间戳字段，冲突率陡增。这不是这个项目的独创：`package-lock.json`、`Cargo.lock`、`go.sum` 全都不写时间戳、全都排序。
 
 一个真实的项目锁长这样：
 
@@ -491,15 +498,13 @@ that git can auto-merge cleanly.
 
 `skillPath` 是为了更新时只重装这一个 skill 而不是整个仓库（`local-lock.ts:25-31` 注释写明了这一点）。漏掉它的后果是更新一个 skill 要拉整个仓库重装所有 skill。
 
-这套机制有一条边界，比上面所有细节都重要。
-
 **这个哈希只用于检测漂移，从不用于校验完整性。** `skills experimental_install` 看起来像 `npm ci`，实际不是。在 `src/install.ts` 里搜 `hash`、`verify`、`integrity`，出现次数是零。它做的事就是读锁文件、按 source 分组、挨个调 `runAdd`，锁里记的 `computedHash` 在还原流程里从头到尾没被读过。而且 `ref` 是可选字段（`local-lock.ts:20-21`），没带 ref 装的 skill，还原时拉的是上游此刻的 HEAD。
 
 `npm ci` 的定义性特征恰恰是严格按 lock 还原、校验 integrity、不一致就报错。这个命令一条都不占，它更接近 `npm install --no-save`。哈希只在全局 update 里被用来回答"上游变了吗"（`update.ts:373`、`:410`），从不回答"我装到的是对的吗"。
 
 分清这两件事，才知道内部 skill 库还缺什么：**你现在没有任何机制，能防止上游被人改掉内容后你无声无息地装到新版本**。
 
-#### 4.3.3 钉版本，以及 Go 已经做完的那道题
+#### 钉版本，以及 Go 已经做完的那道题
 
 内容哈希解决的是变没变，钉版本是另一件事。CLI 支持在来源后面用 `#` 加 ref（`src/source-parser.ts:203-233`）：
 
@@ -532,15 +537,17 @@ ref 会被写进锁文件，后续 `update` 带着这个 ref 去比对，所以�
 
 真正该拿来对照的是 `go.sum`，因为 Go modules 和 skills 同构：源在 git、没有中央 registry（proxy 可选）、用目录内容哈希。同样的约束下，Go 多做了三件事。
 
-**dirhash 有明确的编码。** 每个文件先算 sha256，拼成 `<hex>  <name>\n` 逐行排序后整体再哈希，没有 4.3.1 那个拼接歧义。
+**dirhash 有明确的编码。** 先按文件名排序，每个文件写一行 `<文件 sha256 的 hex>  <name>\n`，再对整段内容算一次 sha256。每个文件的内容先被压成定长的哈希，行之间有换行分隔，所以没有前面那个拼接歧义。
 
-**版本能比大小。** go.mod 里的 `require` 写的是最低版本，构建时 Go 用最小版本选择（MVS）取满足所有 require 的最低版本；主版本号写进导入路径（`/v2`），所以"跟着 1.x 走"是天然成立的。上游没打 tag 时，Go 生成 `v0.0.0-20260722120000-c042b9123456` 这样的伪版本，把提交时间戳和 SHA 编码成一个可排序的版本号。伪版本只是给未打 tag 的提交起的名字，不是范围约束，但它让"这份比那份新"有了答案。skills 目前只有"一样"和"不一样"两种状态。
+**版本能比大小。** go.mod 里的 `require` 写的是最低版本，构建时 Go 用最小版本选择（MVS）取满足所有 require 的最低版本；主版本号写进导入路径（`/v2`），所以"跟着 1.x 走"是天然成立的。
+
+上游没打 tag 时，Go 生成 `v0.0.0-20260722120000-c042b9123456` 这样的伪版本，把提交时间戳和 SHA 编码成一个可排序的版本号。伪版本只是给未打 tag 的提交起的名字，不是范围约束，但它让"这份比那份新"有了答案。skills 目前只有"一样"和"不一样"两种状态。
 
 **sumdb 提供了独立的信任根。** 校验和被记进一个公开的透明日志，这才把漂移检测升级成了完整性校验。
 
 这三件里，排序能力是最容易补的。把 `git describe` 的输出（`v1.3.0-7-gc042b91`，表示 1.3.0 之后第 7 个提交）塞进 `metadata.version`，今天就能做，成本是发布脚本里的一行。
 
-#### 4.3.4 update 的完整链路
+#### update 的完整链路
 
 `skills update` 项目级和全局都管，两条路径分开实现。图 7-4 是全局那条。
 
@@ -548,20 +555,17 @@ ref 会被写进锁文件，后续 `update` 带着这个 ref 去比对，所以�
 sequenceDiagram
     participant U as 用户
     participant C as skills update
-    participant L as 锁文件
     participant G as GitHub Trees API
     participant A as skills add 子进程
 
     U->>C: npx skills update
-    C->>L: 读出所有已装 skill
-    C->>C: 按 source 分组 跳过无法检查的
+    C->>C: 读全局锁 按 source 分组
     C->>G: 每个 source 一次 fetchRepoTree
     G-->>C: 整棵仓库树
     C->>C: 逐个比对 tree SHA
     C->>U: 列出有更新的 skill
-    U-->>C: 确认
-    C->>A: spawn 子进程重装
-    A->>L: 回写新哈希
+    U->>C: 确认
+    C->>A: spawn 子进程重装并回写锁
 ```
 
 图 7-4：`skills update` 的全局路径。GitHub 来源整条链路一次 API 调用就够，其他来源才需要 clone。
@@ -592,21 +596,21 @@ export function getSkipReason(entry: SkillLockEntry): string {
 }
 ```
 
-这些 skill 会被单独列出来并给出手动更新的命令，没有静默跳过。留意第三行：`.well-known` 来源永远不检查更新，4.5.2 搭内网源时会撞上它。
+这些 skill 会被单独列出来并给出手动更新的命令，没有静默跳过。留意第三行：`.well-known` 来源永远不检查更新，4.5 节搭内网源时会撞上它。
 
 还有一个更隐蔽的洞。GitHub Trees API 在 `recursive=1` 时，条目太多会截断并返回 `truncated: true`，而整个 `src/` 里没有一处处理这个字段。在一个大 monorepo 上，免下载的更新检查会静默漏掉 skill：不报错，就是永远显示"已是最新"。再配上匿名请求 60 次/小时且按 IP 计算的限流（一个出口 NAT 后面的团队很容易撞上），这条快路径的可靠性比看起来低。
 
-#### 4.3.5 自己实现最小版本
+#### 带还原校验的版本控制器
 
-一个够用的版本控制器，核心不到 60 行：
+把上面几条改进合起来，一个带还原校验的版本控制器大致是下面这样。这是示意代码，省略了 `collectFilesRecursively`、`read`、`sha256`、`copyInto`、`target` 等辅助函数：
 
 ```typescript
 // 1. 内容哈希：先逐文件算，再按 "hex  name\n" 拼行整体哈希（避免拼接歧义）
 async function folderHash(dir: string): Promise<string> {
   const files = await collectFilesRecursively(dir);   // 跳过 .git / node_modules
+  files.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0)); // 按 UTF-16 码元比较，不依赖 locale
   const lines = await Promise.all(files.map(async (f) =>
     `${sha256(await read(f.path))}  ${f.rel}\n`));
-  lines.sort();                                       // 码点序，不用 localeCompare
   return sha256(lines.join(''));
 }
 
@@ -621,7 +625,7 @@ async function writeLock(lock: Lock, cwd: string) {
 // 3. 还原时校验（这一步原项目没做，但你该做）
 async function install(lock: Lock) {
   for (const [name, e] of Object.entries(lock.skills)) {
-    const dir = await fetch(e.source, e.ref);         // ref 必填，别用 HEAD
+    const dir = await fetchSource(e.source, e.ref);   // ref 必填，别用 HEAD
     if (await folderHash(dir) !== e.hash) throw new Error(`${name} 内容与锁不符`);
     await copyInto(dir, target(name));
   }
@@ -650,7 +654,7 @@ async function install(lock: Lock) {
 
 项目选了第三条，并为它的两个代价都准备了退路。
 
-#### 4.4.1 主副本加相对符号链接
+#### 主副本加相对符号链接
 
 图 7-5 是安装后的目录拓扑。
 
@@ -670,7 +674,7 @@ graph LR
 
 图 7-5：安装后的目录拓扑。Cursor 和 Codex 这类工具的技能目录本来就是 `.agents/skills`，它们不需要链接，直接读真身。
 
-这类工具在代码里叫 universal agent，判断条件就是技能目录等于 `.agents/skills`（`src/agents.ts:809-815`），不需要额外的标记字段，配置本身就是判据。安装时跳过建链接，避免出现指向自己的死循环链接。
+这类工具在代码里叫 universal agent，判断条件就是技能目录等于 `.agents/skills`（`src/agents.ts:845-847` 的 `isUniversalAgent`），配置本身就是判据。安装时跳过建链接，避免出现指向自己的死循环链接。
 
 核心逻辑是先算出两个路径，再尝试建链接、失败就退回拷贝（`src/installer.ts:391-405`）：
 
@@ -692,7 +696,7 @@ if (!symlinkCreated) {
 
 对比 [pnpm](https://pnpm.io/motivation)：它也是一份内容多处引用，但用硬链接加内容寻址存储，图的是省磁盘。skill 只有几 KB，这里用符号链接图的是单一更新点。内容小、更新频繁适合符号链接；内容大、极少更新用硬链接或拷贝更省事。
 
-#### 4.4.2 跨平台的三个坑
+#### 跨平台的三个坑
 
 `createSymlink`（`src/installer.ts:197-263`）不到 70 行，但踩过的坑都在里面。
 
@@ -727,7 +731,7 @@ if (pathsOverlap(skill.path, agentDir)) {
 
 安装流程里有一步是"清空目标目录再写入"，为的是清掉上次安装留下、这次已被删除的文件。如果目标和源是同一个目录，这一步会先把用户的源码删干净。注释里点名了触发场景。只要你的工具会 `rm -rf` 一个由用户输入决定的路径，就该有 `pathsOverlap` 这类检查，它挡的主要是手滑，不是攻击。
 
-安全侧还有一层：所有拼出来的路径都过 `isPathSafe(base, target)`（`installer.ts:73-78`）。它把两个路径 `resolve` 后做字符串前缀比较，能挡住 `../` 这类字面上的越界，但不解析符号链接：base 里如果已经有一个指向外面的链接，经过它写出去的路径照样能通过检查。配合前面的 `sanitizeName`，`name: ../../.ssh/authorized_keys` 会先被净化成 `.ssh-authorized_keys`，再被路径检查拦一道。净化和校验都做，不二选一；要防符号链接逃逸，还得在比较前 `realpath` 一次。
+安全侧还有一层：所有拼出来的路径都过 `isPathSafe(base, target)`（`installer.ts:73-78`）。它把两个路径 `resolve` 后做字符串前缀比较，能挡住 `../` 这类字面上的越界，但不解析符号链接：base 里如果已经有一个指向外面的链接，经过它写出去的路径照样能通过检查。配合前面的 `sanitizeName`，`name: ../../.ssh/authorized_keys` 会先被净化成 `ssh-authorized_keys`：斜杠变成连字符，开头那串 `..-..-.` 被整体剥掉。剥开头的点是为了不生成隐藏文件，`installer.ts:57-61` 的注释写明了这一点。之后再被路径检查拦一道。净化和校验都做，不二选一；要防符号链接逃逸，还得在比较前 `realpath` 一次。
 
 ### 4.5 分发：不靠 registry 的四条通道
 
@@ -742,7 +746,7 @@ npm 有 registry.npmjs.org，pip 有 PyPI。Agent Skills 什么都没有，skill
 
 对做团队内部建设的人来说，第三条是重点，第二条是保底。
 
-#### 4.5.1 GitHub 快路径、浅克隆与 npm 包
+#### GitHub 快路径、浅克隆与 npm 包
 
 快路径解释了一个你会立刻观察到的现象：装 `vercel-labs/agent-skills` 时终端显示的是 `Fetching skills…`，不是 `Cloning repository…`。判据在 `src/add.ts:1146-1155`，白名单只对几个已知 owner（`vercel`、`vercel-labs`、`heygen-com`）和个别自托管快照的仓库开放。
 
@@ -770,7 +774,7 @@ GitHub blocked HTTPS access to <url> because the organization enforces SAML SSO.
 
 代价是 skill 的更新绑死在 `npm install` 上，而且 `sourceType: 'node_modules'` 的条目会被 `skills update` 跳过。
 
-#### 4.5.2 .well-known 自建源
+#### .well-known 自建源
 
 这条通道对内部 skill 建设最直接有用，也是唯一一条要在结论上打折的。
 
@@ -839,11 +843,11 @@ digest 校验是真的在跑。我往产物文件末尾追加了一行文字、�
 - **企业 TLS 中间人**：Node 不读操作系统信任库。装了 Zscaler 之类的机器上，这个 fetch 会直接 `UNABLE_TO_VERIFY_LEAF_SIGNATURE`，得设 `NODE_EXTRA_CA_CERTS`。
 - **代理**：`HTTP_PROXY` / `NO_PROXY` 的行为要自己验。
 
-搭静态站的脚本不到 100 行，鉴权和证书这两件事却够占一周。工期都在后者。
+搭静态站的脚本不到 100 行，工期主要花在鉴权和证书上。
 
-**第三，`.well-known` 来源永远不检查更新。** `getSkipReason` 里明写着这一条（见 4.3.4）。所以用 well-known 搭内网源和每周跑 `skills update` 出更新报告这两件事凑不到一起，后者对前者永远是空的。更新提醒得自己做，最省事的是在发布脚本里把 `index.json` 的变更推到群里。
+**第三，`.well-known` 来源永远不检查更新。** `getSkipReason` 里明写着这一条（见 4.3 节 update 链路）。所以用 well-known 搭内网源和每周跑 `skills update` 出更新报告这两件事凑不到一起，后者对前者永远是空的。更新提醒得自己做，最省事的是在发布脚本里把 `index.json` 的变更推到群里。
 
-#### 4.5.3 schema 怎么演进：三种文件三种策略
+#### schema 怎么演进：三种文件三种策略
 
 `.well-known` 索引是整个项目里唯一一个做对了 schema 版本化的地方。它同时支持两代格式：
 
@@ -878,23 +882,23 @@ if (schema !== undefined) return null;
 
 第三条最反直觉，也最需要限定适用范围。对安装器来说拒绝是对的，装错了有后果而且不可逆。但对绝大多数数据格式，must-ignore 才是能演进的那条路，protobuf 的 unknown fields、Kubernetes 的字段裁剪都是这么干的。
 
-这和后面第 6 节说的"未知字段一律忽略"不矛盾，因为层级不同：**文档级的版本不兼容就拒绝，字段级的未知就忽略**。判据是猜错的后果可不可逆。
+字段层面则相反，参考校验器之外的实现都选择忽略未知字段。两条规则层级不同：**文档级的版本不兼容就拒绝，字段级的未知就忽略**。判据是猜错的后果可不可逆。
 
 把这个判据和前面两个锁文件的做法放在一起，三类文件三种策略：
 
-| 文件类型 | 版本标识 | 遇到不认识的版本 | 为什么 |
+| 文件类型 | 版本标识 | 读到旧版本 / 更新的版本 | 为什么 |
 |---|---|---|---|
-| 本机缓存（全局锁） | 整数 `version` | 直接清空重建 | 能重建，写迁移代码的收益是负的 |
-| 团队基线（项目锁） | 整数 `version` | 直接清空重建，所以要极力避免升版 | 进 git，清空等于丢基线 |
-| 对外发布的格式（well-known 索引） | `$schema` URL | 拒绝处理 | 别人在读，猜错不可逆 |
+| 本机缓存（全局锁） | 整数 `version` | 旧版清空重建；更新版原样信任 | 能重建，写迁移代码不划算 |
+| 团队基线（项目锁） | 整数 `version` | 同上，所以要极力避免升版 | 进 git，清空等于丢基线 |
+| 对外发布的格式（well-known 索引） | `$schema` URL | 不认识的一律拒绝 | 别人在读，猜错不可逆 |
 
-全局锁读到旧版本就整个清空（`src/skill-lock.ts:88-97`），没有迁移代码，用户下次装 skill 时重新填。项目锁用的是同一套代码，但它的 schema 版本至今还是 1，一次都没升过，进 git 的文件轻易不改 schema，这是刻意维持的。
+全局锁读到旧版本就整个清空（`src/skill-lock.ts:88-97`），没有迁移代码，用户下次装 skill 时重新填。判断条件只有 `version < CURRENT_VERSION`，读到比自己新的版本号会原样读入，旧版 CLI 碰上新格式的锁文件时，靠的是新格式恰好兼容。项目锁用的是同一套代码，但它的 schema 版本至今还是 1，一次都没升过，进 git 的文件轻易不改 schema，这是刻意维持的。
 
 ### 4.6 平台适配：一张表驱动 70 多个工具
 
-70 多个工具、每个都有自己的项目目录、全局目录、探测方式，而且这个列表每周都在长。如果每加一个工具要改代码、改 README 表格、改 package.json keywords、改文档里的路径列表，那么文档会过期，而且维护者会被 PR 淹死。
+70 多个工具、每个都有自己的项目目录、全局目录、探测方式，而且这个列表每周都在长。如果每加一个工具都要改代码、README 表格、package.json keywords 和文档，文档一定会过期。
 
-#### 4.6.1 注册表即单一事实源
+#### 注册表即单一事实源
 
 一个平台就是表里的一条（`src/agents.ts:136-145`）：
 
@@ -912,7 +916,7 @@ if (schema !== undefined) return null;
 
 个别工具需要更复杂的探测，也照样塞进表里。OpenClaw 改过两次名，要按历史顺序试 `.openclaw`、`.clawdbot`、`.moltbot` 三个目录（`src/agents.ts:33-47`）。这个函数把 `homeDir` 和 `existsSync` 做成带默认值的参数：适配层最难测的就是"这个目录存不存在"，参数化之后测试不用真去建目录。
 
-#### 4.6.2 CI 把表回写成文档
+#### CI 把表回写成文档
 
 README 里那张 70 多行的平台表、`package.json` 里那串 keywords、文档里的技能目录列表，全都不是手写的。`scripts/sync-agents.ts` 从注册表生成它们，用 HTML 注释做锚点（`scripts/sync-agents.ts:86-97`）：
 
@@ -977,7 +981,7 @@ checkDuplicateDisplayNames();
 
 ## 5. 工程细节
 
-下面这些不构成模块，但可以直接搬走。前四条关于怎么对待用户的机器和数据，后三条关于怎么保护自己的发布链路。
+前四条关于怎么对待用户的机器和数据，后三条关于怎么保护自己的发布链路。
 
 - **遥测默认开，给两个关闭开关。** `DISABLE_TELEMETRY` 或 `DO_NOT_TRACK` 存在即关，CI 环境自动关（`src/telemetry.ts:84-86`）。`DO_NOT_TRACK` 是跨工具的社区约定。
 - **撞了限流才取凭证，并提前说明。** 先匿名请求，限流后才读 `gh auth token`，执行前往 stderr 打一行说明（`src/skill-lock.ts:157-164`）。注释写明了原因：企业终端防护会把这个动作报成凭证窃取。
@@ -987,7 +991,7 @@ checkDuplicateDisplayNames();
 - **发布带 provenance。** `npm publish --provenance` 让 npm 记录包由哪个仓库的哪次 workflow 构建。
 - **changelog 从 PR 列表生成。** 以上个 tag 的提交时间为锚点查合并的 PR。squash merge 之后 commit message 里的信息已经丢了，查 PR 更准。
 
-发布流程本身是一次手动触发，选项只有 `patch` 和 `minor`，没有 major。39 个 tag 里从 `v1.5.0` 到 `v1.5.20` 全是 patch，节奏约一周一次。一个被 70 多个平台依赖的工具，major 会逼所有下游改，所以干脆把这个选项从 UI 上拿掉。
+发布流程本身是一次手动触发，选项只有 `patch` 和 `minor`，没有 major。39 个 tag 里从 `v1.5.0` 到 `v1.5.20` 全是 patch，节奏约一周一次。
 
 ## 6. 适用边界与不该照搬的部分
 
@@ -996,14 +1000,14 @@ checkDuplicateDisplayNames();
 | 你的场景 | 结论 | 理由 |
 |---|---|---|
 | 团队内部推 skill，成员用多种 agent | 该用 | 多目标安装加符号链接，自己写不划算 |
-| 内网私有分发 | 该用 `.well-known` 通道 | 但要先解决 4.5.2 说的鉴权和证书 |
+| 内网私有分发 | 该用 `.well-known` 通道 | 但要先解决 4.5 节说的鉴权和证书 |
 | 只有一种 agent，skill 只有几个 | 不必用 | `git submodule` 或直接拷贝更简单 |
 | 需要 skill 之间有依赖关系 | 不适用 | 格式里没有依赖概念 |
 | 需要精确的语义版本和回滚 | 谨慎 | 只能靠 git tag 加 `#ref`，没有 `^1.2.0` 这种范围表达 |
 
 ### 6.1 实测出来的四个坑
 
-第一个是团队协作场景里最容易中的招。A 同学执行 `npx skills add corp/skills -a claude-code -a windsurf -y`，得到 `.agents/skills/` 加两个工具目录的符号链接，提交 `skills-lock.json`。B 同学 clone 后执行 `npx skills experimental_install`，得到的是：
+第一个出在团队协作里。A 同学执行 `npx skills add corp/skills -a claude-code -a windsurf -y`，得到 `.agents/skills/` 加两个工具目录的符号链接，提交 `skills-lock.json`。B 同学 clone 后执行 `npx skills experimental_install`，得到的是：
 
 ```
 Project Skills
@@ -1015,7 +1019,7 @@ my-skill  ./.agents/skills/my-skill
 
 两个规避办法：把 `.agents/skills/` 提交进 git（内容本来就该进版本控制），或者在团队文档里把还原命令写成完整的 `skills add`。
 
-第二个是 4.3.2 讲过的：`experimental_install` 不是 `npm ci`，没带 ref 的 skill 会还原成上游此刻的 HEAD。
+第二个是 4.3 节讲过的：`experimental_install` 不是 `npm ci`，没带 ref 的 skill 会还原成上游此刻的 HEAD。
 
 第三个是遥测默认开。安装行为（来源、skill 名、目标工具）会上报，公司环境里建议在 CI 和开发机的 shell profile 里统一设 `DO_NOT_TRACK=1`。
 
@@ -1023,9 +1027,9 @@ my-skill  ./.agents/skills/my-skill
 
 一个 skill 可以指示 agent 执行任意命令。所以内部 skill 库必须走 code review，外部 skill 引入前必须有人通读 `SKILL.md` 和 `scripts/`。
 
-### 6.2 不该照搬的部分
+### 6.2 照抄之前要改掉的地方
 
-**别照搬那段内容哈希的实现。** 4.3.1 的三个问题都要改，要抄就抄 Go 的 dirhash 形式。
+**别照搬那段内容哈希的实现。** 4.3 节指出的三个问题都要改，要抄就抄 Go 的 dirhash 形式。
 
 **别照搬"内容哈希即版本"到有兼容性契约的资产上。** 这套机制只回答"变了没有"，回答不了"能不能升"。skill 是纯文本指令，改坏了最坏结果是 agent 表现变差；如果你的资产是代码或有格式契约的数据，语义版本仍然必要。
 
@@ -1035,11 +1039,11 @@ my-skill  ./.agents/skills/my-skill
 
 ### 6.3 这个生态目前还没有的东西
 
-有两件事在做内部 skill 库时会需要，而这个生态今天给不了，得自己补。另外，免下载的更新检查在大仓库上会静默漏报，见 4.3.4 末尾。
+有两件事在做内部 skill 库时会需要，而这个生态今天给不了，得自己补。
 
 **撤回机制完全没有。** 一个内部 skill 被发现有害（它可是以 agent 全权限执行任意指令的），怎么让已经装了的 50 个人卸掉？npm 有 deprecate 和 unpublish，Go 有 retract，这里是零。自己补的办法是在内网源的 `index.json` 里加一个 `deprecated` 字段并在发布脚本里检查，但 CLI 不认，只能靠流程。
 
-**skill 本身没有任何签名。** 4.5.3 和第 5 节讲了不少供应链加固，但那全是保护 `skills` 这个 CLI 自己的。GPG 签名签的是 CLI 的发布提交，provenance 证明的是 CLI 包的来源。它分发的 skill 没有签名、没有 provenance、没有作者身份。而 skill 才是那个"以 agent 全权限执行"的东西。这个反差是整个生态目前最大的缺口。
+**skill 本身没有任何签名。** 第 5 节讲了不少供应链加固，但那全是保护 `skills` 这个 CLI 自己的。GPG 签名签的是 CLI 的发布提交，provenance 证明的是 CLI 包的来源。它分发的 skill 没有签名、没有 provenance、没有作者身份。而以 agent 全权限执行的，恰恰是 skill。
 
 ## 7. 自己搭一套内部 Skill 分发
 
@@ -1049,11 +1053,11 @@ my-skill  ./.agents/skills/my-skill
 
 **建仓库。** 一个 `corp/agent-skills` 仓库，布局用 `skills/<name>/SKILL.md`，每次发布打 tag。团队成员安装时带上 ref，而且用 commit SHA 而不是 tag，tag 可以被移动，SHA 不能。
 
-**搭内网源（如果不能上 GitHub）。** 一个静态站，两类文件：`/.well-known/agent-skills/index.json` 和各个产物。发布脚本干三件事：打包产物、算 sha256、重写 index.json。动手前先把 4.5.2 的鉴权、企业 CA、代理验通。
+**搭内网源（如果不能上 GitHub）。** 一个静态站，两类文件：`/.well-known/agent-skills/index.json` 和各个产物。发布脚本干三件事：打包产物、算 sha256、重写 index.json。动手前先把 4.5 节说的鉴权、企业 CA、代理验通。
 
 **接 CI。** 业务仓库的 CI 里加一步还原，注意 6.1 的第一个坑，视情况用完整的 `skills add` 而不是 `experimental_install`。`skills-lock.json` 进 git 并要求 review。CI 里的 `npx skills` 记得钉版本。
 
-**做治理。** 更新提醒按 4.5.2 的办法，由发布脚本把 `index.json` 的变更推到群里，由人决定要不要升。别做成自动升级：skill 直接改变 agent 行为，自动升级会让全组 agent 的行为在无人察觉时集体变化。
+**做治理。** 更新提醒按 4.5 节的办法，由发布脚本把 `index.json` 的变更推到群里，由人决定要不要升。别做成自动升级：skill 直接改变 agent 行为，自动升级会让全组 agent 的行为在无人察觉时集体变化。
 
 整套下来，你自己写的代码只有那个发布脚本和那个推送变更的 job。
 
