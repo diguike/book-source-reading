@@ -8,7 +8,7 @@ learning_objectives:
   - 能用三轴适配器 + 注册表工厂隔离三个正交的变化轴：接哪种 CLI、跑在哪种终端、对接哪个 IM，新增一种只改局部
   - 能实现一个编排进程可随时重启而不杀死、不丢失长生命周期子进程的机制：用 tmux/zellij 让被管理进程脱离编排者常驻，重启后恢复元数据但惰性 re-fork
   - 能把一个不是自己写的 child 进程的 TUI 投影出去：无头 xterm 渲染成图片推送 + 单端口反代出可交互的只读/可写双通道 Web 终端
-  - 能在多租户机器人里实现双闸权限：用两个纯函数把对话权限和管理命令权限彻底分开，并让权限提示桥按对话级而非管理级授权
+  - 能在多租户机器人里实现双闸权限：用两个纯函数把对话权限和管理命令权限彻底分开，并让回答 agent 提问走对话闸、替 CLI 在终端里按键走操作闸
 feishu_url: "https://fivwvysqdz.feishu.cn/wiki/VUoZwbg4GieiWRkKx5ncXsxsnee"
 last_synced: "2026-08-02"
 ---
@@ -21,22 +21,22 @@ last_synced: "2026-08-02"
 
 ### 1.1 痛点：人不在电脑前，但 agent 在干活
 
-设想一个具体场景：周五晚上你已经离开工位，线上一个服务报警，你想让 agent 先去看日志、定位问题、给个初步修复。手头只有手机。你发一句话过去：看下 order-service 最近的 5xx，先别改代码。服务器上的 `claude` 就在仓库目录里跑起来，分析过程你在飞书里一帧一帧看着；它要执行一条 `kubectl` 前先弹张卡片等你点同意；分析完给结论，你觉得可以动手了，点开一个链接，手机浏览器里就是那个 `claude` 的完整终端，你直接接管敲命令。
+设想一个具体场景：周五晚上你已经离开工位，线上一个服务报警，你想让 agent 先去看日志、定位问题、给个初步修复。手头只有手机。你发一句话过去：看下 order-service 最近的 5xx，先别改代码。服务器上的 `claude` 就在仓库目录里跑起来，分析过程你在飞书里一帧一帧看着；它拿不准该先查哪个 pod 时，会弹张选项卡片问你；分析完给结论，你觉得可以动手了，点开一个链接，手机浏览器里就是那个 `claude` 的完整终端，你直接接管敲命令。
 
-这不是个例。重构模块、跑一轮测试改 bug、批量处理日志，这些耗时任务你都不想守着电脑等：派出去、随时瞄一眼、要拍板时弹个卡片、要上手时点开就是完整终端，这是最理想的工作方式。
+这不是个例。重构模块、跑一轮测试改 bug、批量处理日志，这些耗时任务你都不想守着电脑等：派出去、随时瞄一眼、要拍板时它弹卡片来问、要上手时点开就是完整终端，这是最理想的工作方式。
 
 可真要把它做出来，会连续撞到四个工程问题：
 
 - agent CLI 是个 TUI 程序（TUI = 全屏终端界面，靠光标控制原地刷新重绘，像 `top`、`vim` 那种满屏滚的东西），输出是一堆带 ANSI 颜色转义的字节，怎么把它投到一个只能显示图片和文本的 IM 卡片上？
 - 服务器上同时有几十个会话在跑，daemon 要升级重启，怎么做到**重启不打断正在跑的 CLI**、也不丢上下文？
-- 一个群里多个机器人、多个用户，谁能让机器人干活、谁只能围观、谁能替 agent 点同意执行，这套权限怎么收敛？
+- 一个群里多个机器人、多个用户，谁能让机器人干活、谁只能围观、谁能回答 agent 的提问、谁能替它在终端里按键，这套权限怎么收敛？
 - 接了 7 种 CLI，每种启动参数、输入方式、就绪信号都不同，怎么不让这些差异污染核心逻辑？
 
 botmux 把这四件事都做了，而且做法都有可迁移价值。
 
 ### 1.2 四个可迁移工程模式
 
-1. **三轴适配器 + 注册表工厂**。把三件会变的事：接哪种 CLI、跑在哪种终端、对接哪个 IM：各做成一个接口加一张注册表。新增一种只改局部，核心不动。多云部署脚本、多 IM 网关、多数据源 ETL，凡是要桥接一堆异构外部系统的工具，都是这套骨架。
+1. **三轴适配器 + 注册表工厂**。把三件会变的事——接哪种 CLI、跑在哪种终端、对接哪个 IM——各做成一个接口加一张注册表。新增一种只改局部，核心不动。多云部署脚本、多 IM 网关、多数据源 ETL，凡是要桥接一堆异构外部系统的工具，都是这套骨架。
 
 2. **进程脱离编排者常驻 + 惰性重连**。用 tmux/zellij 把子进程托管成独立常驻，编排进程重启时只读回元数据、先不拉起子进程，等下一条请求再重新接管。管理进程要频繁升级、被管进程却不能跟着死的场景，都用得上。
 
@@ -55,9 +55,11 @@ cd botmux && git checkout v2.93.1
 
 ## 2. 部署形态与 5 分钟接入
 
-botmux 能本地跑，但它不是一个纯本地工具，它要先在飞书开放平台建一个应用（拿 AppID / AppSecret、配事件订阅），再以 daemon 形态常驻。所以5 分钟跑起来对它来说是5 分钟接入飞书。
+botmux 能本地跑，但它不是一个纯本地工具，它要先在飞书开放平台建一个应用（拿 AppID / AppSecret、配事件订阅），再以 daemon 形态常驻。所以对它来说，"5 分钟跑起来"其实是"5 分钟接入飞书"。
 
-前置要求三样：Node.js ≥ 22；本地已装好并登录至少一种 AI 编程 CLI（`claude` / `codex` / `gemini` 等在 PATH 中，botmux 桥接它们而不自带）；推荐顺手装 tmux（终端复用器，能让终端里的程序在你断开连接后继续跑，装了它 botmux 自动启用会话常驻，见 4.2）。还有一个容易漏的。**CJK 字体**：截图要把中文渲染出来，Linux 精简镜像常常没装，botmux 启动时检测到缺会后台 `apt-get install fonts-noto-cjk`（需免密 sudo），macOS 自带 PingFang / Hiragino 不用管（细节见 4.3.3）。
+前置要求三样：Node.js ≥ 22；本地已装好并登录至少一种 AI 编程 CLI（`claude` / `codex` / `gemini` 等在 PATH 中，botmux 桥接它们而不自带）；推荐顺手装 tmux（终端复用器，能让终端里的程序在你断开连接后继续跑；装了它 botmux 自动启用会话常驻，见 4.2）。
+
+还有一个容易漏的前置条件是 **CJK 字体**。截图要把中文渲染出来，Linux 精简镜像常常没装，botmux 启动时检测到缺会后台 `apt-get install fonts-noto-cjk`（需免密 sudo），macOS 自带 PingFang / Hiragino 不用管（细节见 4.3.3）。
 
 ```bash
 npm install -g botmux
@@ -90,7 +92,7 @@ botmux start
 
 ## 3. 全景架构
 
-我们先给一张全景图垫底。botmux 跑起来就三层东西：你这边是飞书，中间是一个常驻的 daemon，daemon 给每个会话开一个 worker 小弟，每个小弟管一个真正干活的 CLI。手机看的截图、网页里的终端，都是 worker 从 CLI 那儿引出来的两根管子。先把这张图记在脑子里，后面每一节都是在放大其中一块。
+botmux 跑起来就三层东西：你这边是飞书，中间是一个常驻的 daemon，daemon 给每个会话开一个 worker 小弟，每个小弟管一个真正干活的 CLI。手机看的截图、网页里的终端，都是 worker 从 CLI 那儿引出来的两根管子。先把这张图记在脑子里，后面每一节都是在放大其中一块。
 
 ```mermaid
 graph TB
@@ -160,7 +162,7 @@ type WorkerToDaemon =
 
 `init` 这条单消息就背了 44 个字段（从 sessionId、cliId 到 adopt 元数据、skill 目录、per-bot env 全塞在里面），因为 worker fork 出来是张白纸，启动所需的一切都得靠这一条消息带过去。
 
-代码量分布也能呼应这张图，重量都压在IM 交互和进程编排两块：
+代码量分布也能呼应这张图，重量都压在 IM 交互和进程编排两块：
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
@@ -194,11 +196,11 @@ type WorkerToDaemon =
 
 ### 4.1 三轴适配器：把三个变化轴各自隔离
 
-**30 秒版**：botmux 要接 7 种 CLI、3 种终端后端、还可能换 IM 平台：把这三件会变的事各做成一个接口加一张注册表，新增一种只改一处，核心不动。
+**30 秒版**：botmux 要接 7 种 CLI、3 种终端后端、还可能换 IM 平台。把这三件会变的事各做成一个接口加一张注册表，新增一种只改一处，核心不动。
 
 #### 4.1.1 桥接 N 个异构外部程序的发散问题
 
-我们先看它要面对什么。botmux 要接 7 种以上 CLI，每种的脾气都不一样：Claude Code 的就绪信号是一个 SessionStart hook，Codex 有自己的消息队列支持 type-ahead，Gemini 可以把首轮 prompt 直接塞进 `-i` 参数，有的提交输入要回车有的不用。与此同时，CLI 进程可以跑在裸 PTY 里，也可以跑在 tmux / zellij 里，还可以是远程执行服务。再叠加一层：今天对接飞书，明天可能要对接 Lark 国际版甚至别的 IM。
+botmux 要接 7 种以上 CLI，每种的脾气都不一样：Claude Code 的就绪信号是一个 SessionStart hook，Codex 有自己的消息队列支持 type-ahead，Gemini 可以把首轮 prompt 直接塞进 `-i` 参数，有的提交输入要回车有的不用。与此同时，CLI 进程可以跑在裸 PTY 里，也可以跑在 tmux / zellij 里，还可以是远程执行服务。再叠加一层：今天对接飞书，明天可能要对接 Lark 国际版甚至别的 IM。
 
 如果不做隔离，这些差异会以 `if (cliId === 'claude') ... else if (cliId === 'codex')` 的形式渗透进 daemon 的每一个角落，最后变成没人敢动的分支地狱。
 
@@ -213,7 +215,7 @@ type WorkerToDaemon =
 
 #### 4.1.3 botmux 的选择：编译期接口 + 三轴划分
 
-botmux 走方案 B，编译期接口加静态注册表。我们看它怎么落地，不搞运行时插件系统。在这个前提下，它把变化拆成三根正交的轴，每根一个接口加一个注册表：
+botmux 走方案 B：编译期接口加静态注册表，不搞运行时插件系统。在这个前提下，它把变化拆成三根正交的轴，每根一个接口加一个注册表：
 
 ```mermaid
 graph LR
@@ -243,7 +245,7 @@ graph LR
 - **后端轴**（`src/adapters/backend/`）：接口 `SessionBackend` 把进程跑在哪抽象成 `spawn / write / resize / onData / onExit / kill`。
 - **IM 轴**（`src/im/lark/`）：用 `DaemonSession.scope` 字段把回复路由收敛成 `thread`（话题内回复）和 `chat`（普通群消息）两种策略，再用 `ChatReplyMode` 四态（`bot-registry.ts:15`，`chat` / `new-topic` / `shared` / `chat-topic`）描述普通群里每次 @ 该开新话题、该折进同一话题还是该复用一个 chat-scope 会话。
 
-CLAUDE.md 里把新增一种 CLI写成一张 8 步 checklist：加文件、加进 `CliId` 联合类型、注册表加 case、几处显示名加映射。改动是机械的、局部的，这正是接口隔离到位的体现。
+项目的 CLAUDE.md 把"新增一种 CLI"写成一张 8 步 checklist：加文件、加进 `CliId` 联合类型、注册表加 case、几处显示名加映射。改动是机械的、局部的，这正是接口隔离到位的体现。
 
 三轴隔离之上，消息进核心后还有一层**命令分发**，是同一个路子（`command-handler.ts`）。一条消息进来，分三层判定：
 
@@ -257,7 +259,7 @@ CLAUDE.md 里把新增一种 CLI写成一张 8 步 checklist：加文件、加�
 
 #### 4.1.4 复合会话键：让多 bot 同群成立的一行代码
 
-三轴隔离之外，我们还要认识一个关键抽象：复合会话键。daemon 在内存里维护 `Map<string, DaemonSession>`，键不是简单的会话 id，而是（`src/core/types.ts:171`）：
+三轴隔离之外，还有一个关键抽象：复合会话键。daemon 在内存里维护 `Map<string, DaemonSession>`，键不是简单的会话 id，而是（`src/core/types.ts:171`）：
 
 ```ts
 export function sessionKey(anchorId: string, larkAppId: string): string {
@@ -269,7 +271,7 @@ export function sessionKey(anchorId: string, larkAppId: string): string {
 
 #### 4.1.5 关键代码：注册表工厂与 claude-code adapter
 
-接口定义之外，真正把"加一种 CLI 是局部改动"落实的是注册表那个工厂函数，我们看它（`src/adapters/cli/registry.ts:111`）：
+接口定义之外，真正把"加一种 CLI 是局部改动"落实的是注册表那个工厂函数（`src/adapters/cli/registry.ts:111`）：
 
 ```ts
 switch (id.toLowerCase() as CliId) {
@@ -302,13 +304,13 @@ buildArgs({ sessionId, resume, resumeSessionId, model, disableCliBypass, skillPl
 
 `DaemonSession`（`src/core/types.ts:30`）本身是状态中枢，它的注释划清了一条边界：纯 IM 渲染态放在 IM 适配器自己的 Map 里，不挂到这个类型上。保持核心会话态与具体 IM 解耦，这是 IM 轴可替换的前提。
 
-多 bot 的配置模型在 `bot-registry.ts`。每个机器人是 `bots.json` 里的一条记录，以 `larkAppId` 为主键，各自配各自的 `cliId`、`model`、`backendType`、`workingDir`、`allowedUsers`，甚至各自一套 `env`。最值得单看的是 `env`：它让一台机器上 bot A 跑官方 Claude、bot B 跑第三方 GLM 成立，只需给后者填两个环境变量（`ANTHROPIC_BASE_URL` 加 key）。
+多 bot 的配置模型在 `bot-registry.ts`。每个机器人是 `bots.json` 里的一条记录，以 `larkAppId` 为主键，各自配各自的 `cliId`、`model`、`backendType`、`workingDir`、`allowedUsers`，甚至各自一套 `env`。`env` 这一项让一台机器上 bot A 跑官方 Claude、bot B 跑第三方 GLM 成立，只需给后者填两个环境变量（`ANTHROPIC_BASE_URL` 加 key）。
 
-而这套 env 的关键是不能串台。tmux 后端的注入走每个 pane 的 `/usr/bin/env`，不写进共享 server 的全局 env（这个 shell 包装的精巧处 4.2.3 会讲），所以 bot A 的服务商配置绝不会漏进 bot B 的会话。一份配置文件养一群脾气各异的机器人，就靠两点：每条记录自带全套适配参数，加进程级隔离。
+而这套 env 的关键是不能串台。tmux 后端的注入走每个 pane 的 `/usr/bin/env`，不写进共享 server 的全局 env（这层 shell 包装 4.2.3 会讲），所以 bot A 的服务商配置绝不会漏进 bot B 的会话。一份配置文件养一群脾气各异的机器人，就靠两点：每条记录自带全套适配参数，加进程级隔离。
 
 #### 4.1.6 静态注册表还是插件系统
 
-这个模块真正的取舍只有一个，但值得记一辈子。**静态注册表 vs 插件系统**：botmux 选静态，换来类型安全和简单，放弃了第三方热插拔。对比 claude-code-router 这类纯路由层，它面对的是 N 个 provider 的协议翻译，差异是数据形状的（端点、鉴权头、字段映射），用一张配置表就能描述清楚；botmux 面对的是 N 个 CLI 的行为差异（怎么拼参数、怎么写输入、怎么判就绪），没法用表表达，只能用接口。
+这个模块真正的取舍只有一个，**静态注册表 vs 插件系统**。botmux 选静态，换来类型安全和简单，放弃了第三方热插拔。对比 claude-code-router 这类纯路由层，它面对的是 N 个 provider 的协议翻译，差异是数据形状的（端点、鉴权头、字段映射），用一张配置表就能描述清楚；botmux 面对的是 N 个 CLI 的行为差异（怎么拼参数、怎么写输入、怎么判就绪），没法用表表达，只能用接口。
 
 一句话尺子：**差异是数据就用表，差异是行为就用接口**。硬把行为差异塞进配置表，会得到一张带"回调字符串""条件分支字段"的畸形表；硬把数据差异写成接口，又会得到一堆只 return 一个常量的样板实现。
 
@@ -316,7 +318,7 @@ buildArgs({ sessionId, resume, resumeSessionId, model, disableCliBypass, skillPl
 
 #### 4.1.7 接口 + 注册表工厂的骨架
 
-三轴适配器的骨架其实很短，我们照着写一遍，核心就是接口 + 注册表工厂 + 缓存：
+三轴适配器的骨架很短，核心就是接口 + 注册表工厂 + 缓存：
 
 ```ts
 // 1. 定义接口（CLI 轴）
@@ -385,7 +387,7 @@ botmux 选 C 当主路径，再拿做法 A 的磁盘 transcript 兜底：有 tmu
 
 #### 4.2.3 botmux 的实现：pty 是观察窗口，tmux session 才是真身
 
-我们从会话名看起，tmux 会话名是确定性的（`src/adapters/backend/tmux-backend.ts:70`）：
+先看会话名。tmux 会话名是确定性的（`src/adapters/backend/tmux-backend.ts:70`）：
 
 ```ts
 static sessionName(sessionId: string): string {
@@ -409,7 +411,7 @@ if (this.reattaching) {
 
 上面的 `new-session` 实参为了读着清楚做了精简。完整版还要传 `-x` / `-y` 把终端尺寸定死，以及一串 `envAssignments`（per-bot 环境变量注入的关键步骤，4.2 末尾会讲它为什么要放在这里），完整参数结构见 `tmux-backend.ts:235` 一带。
 
-这段代码就一个关键认知，记住它整节就通了：**那个 node-pty 句柄只是一扇观察窗，tmux session 才是真身。** 打个比方。tmux session 是一间一直开着灯、有人在里面干活的房间，worker 的 pty 只是趴在窗户上看的人。看的人走了（worker 退出），房间里的人照样干活。下面这张图就是这个意思：
+这段代码的要点是：**那个 node-pty 句柄只是一扇观察窗，tmux session 才是真身。** 打个比方，tmux session 是一间一直开着灯、有人在里面干活的房间，worker 的 pty 只是趴在窗户上看的人。看的人走了（worker 退出），房间里的人照样干活。下面这张图就是这个意思：
 
 ```mermaid
 graph TB
@@ -484,11 +486,11 @@ zellij 的接管更麻烦，因为 `zellij list-panes` 不暴露 pid，没法直
     - PTY 静默 2 秒、且 3 秒内没出现过 spinner（转圈加载动画）；
     - spinner 一出现就刷新计时、把判定往后推，免得把"还在转圈思考"误判成空闲。
 
-  我们把这套启发式记住，它同时驱动三件事：卡片头部颜色、`final_output` 该不该发、回收时这个会话能不能动。从黑盒进程的输出流反推它的运行状态，是桥接任何不报告状态的外部程序都绕不开的活。正则 + 静默窗口 + spinner 抑制，是一套可复用的组合。
+  这套启发式同时驱动三件事：卡片头部颜色、`final_output` 该不该发、回收时这个会话能不能动。从黑盒进程的输出流反推它的运行状态，是桥接任何不报告状态的外部程序都绕不开的活。正则 + 静默窗口 + spinner 抑制，是一套可复用的组合。
 
 #### 4.2.5 确定性 session 名 + 探测后二选一
 
-我们写一版进程脱离 + 惰性重连的最小骨架，核心就是确定性 session 名 + 探测后二选一 + 元数据落盘：
+进程脱离 + 惰性重连的最小骨架，核心是确定性 session 名 + 探测后二选一 + 元数据落盘：
 
 ```ts
 import { spawn as ptySpawn } from 'node-pty';
@@ -535,7 +537,7 @@ function restore() {
 }
 ```
 
-关键就两点：① attach 用的 pty 是可丢弃的观察窗口，tmux session 才是真身；② 重启恢复只填元数据，把 attach 推迟到真正有请求时。
+这一节归结为两点：① attach 用的 pty 是可丢弃的观察窗口，tmux session 才是真身；② 重启恢复只填元数据，把 attach 推迟到真正有请求时。
 
 ### 4.3 把终端投影到手机
 
@@ -543,7 +545,7 @@ function restore() {
 
 #### 4.3.1 把一个会刷新重绘的 TUI 塞进只能显示图片的卡片
 
-我们要投影的 agent CLI 是个 TUI 程序：输出带 ANSI 颜色、用光标控制序列原地刷新、画进度条和方框。这种东西没法直接当文本贴进 IM：贴原始字节是一屏乱码，贴 strip 掉转义的纯文本又丢了布局、丢了正在重绘的那一帧。
+要投影的 agent CLI 是个 TUI 程序：输出带 ANSI 颜色、用光标控制序列原地刷新、画进度条和方框。这种东西没法直接当文本贴进 IM：贴原始字节是一屏乱码，贴 strip 掉转义的纯文本又丢了布局、丢了正在重绘的那一帧。
 
 要把它投到手机飞书上，本质是要解决：怎么在服务器上**无头地**把终端画面渲染出来（没有真实显示器），再变成 IM 能展示的形态（图片），同时还得让用户能反向操作（在卡片上点键、在网页里敲键盘）。
 
@@ -555,7 +557,7 @@ function restore() {
 | B：录制成 asciinema 回放 | 录终端会话、事后回放 | 保真，但是事后回放不是实时投影，且 IM 里放不了播放器 |
 | C：无头渲染成图片、定时推帧 | 无头 xterm（不接显示器，画面在内存里一格格算好、不往屏幕画）把屏幕缓冲区用 canvas 画成 PNG，定时上传 | 保真、IM 原生支持图片、能叠交互按钮；代价是要处理字体（CJK/emoji）、控制推帧频率不打爆 IM API |
 
-Web 终端侧另有一条成熟路线：ttyd / gotty 把本地终端通过 WebSocket 暴露成网页 xterm.js。botmux 的 Web 终端正是这条路线，但它把IM 截图和Web 终端做成了同一个会话的两个投影面，共享同一个 PTY 源。
+Web 终端侧另有一条成熟路线：ttyd / gotty 把本地终端通过 WebSocket 暴露成网页 xterm.js。botmux 的 Web 终端正是这条路线，但它把 IM 截图和 Web 终端做成了同一个会话的两个投影面，共享同一个 PTY 源。
 
 botmux 选 C 做卡片投影 + ttyd 式 Web 终端，两条通道并行。它的库选择极其克制：`package.json` 里只有 `@xterm/headless` + `@napi-rs/canvas` + `node-pty` + `ws`，**没有 puppeteer、没有 sharp、没有 electron**。无头渲染没有走起个 headless Chrome 截图的重路线。
 
@@ -582,7 +584,7 @@ export function captureToPng(terminal: Terminal, opts: CaptureOpts): Buffer {
 }
 ```
 
-固定格宽 8.4px、格高 18px，Tokyo Night 配色（和 Web 终端一致）。**这里最值得抄的是字体链的顺序**：skia 在 Linux 上不自动发现系统字体，必须显式 `GlobalFonts.registerFromPath()`，且它会按字体链顺序逐字符找含该 glyph 的字体。源码注释把一个实测踩出来的坑写得很清楚（`screenshot-renderer.ts:42` 一带）：
+固定格宽 8.4px、格高 18px，Tokyo Night 配色（和 Web 终端一致）。**字体链的顺序是这里最容易踩坑的地方**。skia 在 Linux 上不自动发现系统字体，必须显式 `GlobalFonts.registerFromPath()`，且它会按字体链顺序逐字符找含该 glyph 的字体。源码注释把一个实测踩出来的坑写得很清楚（`screenshot-renderer.ts:42` 一带）：
 
 ```ts
 // ── fontFamilyChain 顺序很关键 ──
@@ -594,7 +596,7 @@ export function captureToPng(terminal: Terminal, opts: CaptureOpts): Buffer {
 
 直觉上把覆盖最全的 CJK 字体放前面，反而是错的。CJK 字体里那套全角 ASCII 字形会让等宽英文忽宽忽窄。正确顺序是：拉丁等宽（DejaVu / JetBrains / macOS 的 Menlo）放最前面占住 ASCII，CJK 只补汉字，emoji 再兜彩色符号。每一档都列了 Linux 和 macOS 各自的候选路径，逐个 `tryRegister` 探，哪个在用哪个。emoji 和 dingbats 还单独做了垂直居中校正，对齐位图字形的度量。
 
-一句话记住：拉丁优先、CJK 补字、emoji 兜底，这个顺序是中英混排终端能正确截图的前提。装反了英文间距就乱，CJK 没注册中文就成方块。
+拉丁优先、CJK 补字、emoji 兜底，这个顺序是中英混排终端能正确截图的前提。装反了英文间距就乱，CJK 没注册中文就成方块。
 
 字体文件本身从哪来，也是个落地问题。服务器尤其是精简的 Linux 镜像，常常根本没装 CJK 字体，那截图里中文就是一片方块。
 
@@ -634,7 +636,7 @@ worker 回传的不是一种消息，是两种，分轻重。`screen_update`（`
 
 为什么拆两条？因为成本和频率不一样。状态一变就要立刻反映到卡片头部颜色（idle 绿、working 蓝、limited 红），这事轻、要勤发；但没必要每次都重渲一张图。更进一步，`displayMode` 默认是 `hidden`，用户点了显示输出才切到 `screenshot`：切之前 worker 连图都不渲。能省的渲染都推迟到用户真的要看的那一刻。
 
-还有一类特殊的回传是 `tui_prompt`（`:313`）：worker 的 screen-analyzer 检测到 CLI 弹出了一个 TUI 选择菜单（比如 Claude 的是否允许多选），就把选项结构化地发给 daemon，daemon 渲染成一张可点的卡片，用户点选的结果再作为导航键回送、驱动 CLI 在菜单里选中。这跟 4.3.5 的卡片键盘按钮是两回事。键盘按钮是盲发一个按键，`tui_prompt` 是把 CLI 当前的菜单语义解析出来变成结构化选项。
+还有一类特殊的回传是 `tui_prompt`（`:313`）：worker 的 screen-analyzer 检测到 CLI 弹出了一个 TUI 选择菜单（比如关闭 bypass 后 Claude 弹出的权限确认，或多选菜单），就把选项结构化地发给 daemon，daemon 渲染成一张可点的卡片，用户点选的结果再作为导航键回送、驱动 CLI 在菜单里选中。点这张卡片等于替 CLI 按键，所以要过 `canOperate`（见 4.4.4）。这跟 4.3.5 的卡片键盘按钮是两回事。键盘按钮是盲发一个按键，`tui_prompt` 是把 CLI 当前的菜单语义解析出来变成结构化选项。
 
 #### 4.3.5 反向操作：从卡片按钮和 Web 终端写回 PTY
 
@@ -674,13 +676,13 @@ sequenceDiagram
 
 #### 4.3.6 截图还是文本、canvas 还是浏览器、单端口还是直连
 
-- **截图 vs 文本**。截图保真但有延迟（10s 节流）、占带宽、不可搜索。botmux 给了 displayMode 让用户切截图 / 隐藏 / 导出文字，把选择权交出去，而不是替用户定死一种。这是对的：盯进度看截图，复制内容要文本。
+- **截图 vs 文本**。截图保真但有延迟（10s 节流）、占带宽、不可搜索。botmux 给了 displayMode 让用户切截图 / 隐藏 / 导出文字，把选择权交出去，而不是替用户定死一种：盯进度看截图，复制内容要文本。
 - **原生 canvas vs headless 浏览器**。选 `@napi-rs/canvas` 而不是 puppeteer，换来轻量（不拉一个 Chromium）和快，代价是要自己实现逐格渲染和字体回退。对渲染一个固定网格的终端这种规整场景，自己画反而比起浏览器更可控。如果要渲染的是任意 HTML，结论会反过来。
 - **单端口反代 vs 每会话直连**。`terminal-proxy.ts` 把所有会话的 Web 终端收到一个端口后面（`/s/<sessionId>/`），换来的是 SSH 只转一个端口就能访问全部会话、会话睡着了访问时还能按需唤醒 worker；代价是多一跳转发、proxy 自己成了单点。对比 ttyd 那种一个终端一个端口的直连，反代在"会话多、要远程访问"时明显更省心，在"就一个终端、本地访问"时则是没必要的复杂度。选不选反代取决于会话数和访问拓扑，不是组件越多越好。
 
 #### 4.3.7 渲染成图和 Web 终端两条通道
 
-我们把无头终端投影的最小骨架搭起来，渲染成图和 Web 终端两条通道都立起来：
+无头终端投影的最小骨架，渲染成图和 Web 终端两条通道都要立起来：
 
 ```ts
 import { Terminal } from '@xterm/headless';
@@ -749,7 +751,7 @@ wss.on('connection', (ws, req) => {
 
 骨架立起来了，但真正能出一张"中文不乱、颜色对、光标在位"的截图，硬骨头全在 `render` 的内层循环里，得自己补三样（`toCss` 也得自己写）：
 
-- **宽字符**：一个中文或 emoji 占两格。xterm 把它存成"宽格（`getWidth()===2`）+ 一个尾格（`getWidth()===0`）"，尾格要 skip、背景要按两格宽画。漏了这步，中文就重叠错位：这是最容易翻车的一处。
+- **宽字符**：一个中文或 emoji 占两格。xterm 把它存成"宽格（`getWidth()===2`）+ 一个尾格（`getWidth()===0`）"，尾格要 skip、背景要按两格宽画。漏了这步，中文就重叠错位，这是最容易翻车的一处。
 - **取色**：`getFgColor()` 拿到的可能是 256 调色板索引，也可能是 24 位 RGB，得看 `isFgRGB()` 分别转成 CSS 颜色。
 - **粗体 / 反色 / 光标**：粗体换字体、反色交换前后景、光标在 `cursorX/cursorY` 那格画个反色块。
 
@@ -765,10 +767,11 @@ botmux 的 `screenshot-renderer.ts` 那一百多行干的就是这三件事。�
 
 - 谁能让这个机器人响应自己（路由级）？
 - 谁能跑 `/repo`、`/cd`、`/relay` 这些会改会话工作目录、搬运会话的管理命令（操作级）？
-- agent 跑到一半弹出是否允许执行这条命令，谁有权替它点同意？
+- agent 跑到一半停下来问人（选方案 A 还是 B），谁能回答？
+- CLI 在终端里弹出原生确认菜单，谁能替它按键？
 - 别的部署的外部机器人来 @ 它，给不给路由、给不给操作权？
 
-如果用一个布尔白名单一刀切，要么管得太松（能对话的人就能改你的工作目录），要么管得太死（围观者想帮 agent 点个确认都不行）。
+如果用一个布尔白名单一刀切，要么管得太松（能对话的人就能改你的工作目录），要么管得太死（围观的同事连 agent 的一个澄清问题都答不了）。
 
 #### 4.4.2 两种主流授权模型对比
 
@@ -777,9 +780,9 @@ botmux 的 `screenshot-renderer.ts` 那一百多行干的就是这三件事。�
 | A：单一白名单 / 单一角色 | 一个 `allowedUsers` 列表，在就全放行，不在全拒 | 简单，但表达不了"能对话但不能操作"这种中间态 |
 | B：RBAC / scope 体系 | 给每个动作定义权限位、给每个主体分角色（像 Slack 的 OAuth scope、Unix sudoers） | 表达力强，但维护一套角色-权限矩阵对自部署机器人太重 |
 
-botmux 走了 B 的简化版：不搞通用 RBAC，而是把权限收敛成**两个语义明确的闸**：能对话和能操作，每个闸是一个纯函数，各自独立判定。这是在表达力和复杂度之间一个精准的折中：只要两档，但这两档覆盖了真实需求的绝大部分。
+botmux 走了 B 的简化版：不搞通用 RBAC，而是把权限收敛成**两个语义明确的闸**——能对话、能操作。每个闸是一个纯函数，各自独立判定。只有两档，表达力比 RBAC 弱，但覆盖了自部署场景的常见需求。
 
-为什么不上完整 RBAC？因为 RBAC 真正的成本不在定义权限位，而在维护两张映射：角色到权限、主体到角色：外加授权 UI、审计、角色继承一整套。
+为什么不上完整 RBAC？因为 RBAC 真正的成本不在定义权限位，而在维护两张映射（角色到权限、主体到角色），外加授权 UI、审计、角色继承一整套。
 
 Slack app 的 OAuth scope 有几十个，Discord 的 permission 是个 64 位整数按位与。那是给成千上万第三方应用 + 公开生态准备的复杂度。对一个自部署、用户就是机器主人和几个同事的工具，这套机器太重了。
 
@@ -838,29 +841,33 @@ export function canOperate(larkAppId, _chatId, senderOpenId): boolean {
 
 几条印证 README 论断的细节：`/grant @bot` 只写进 `chatGrants`（talk-only，碰不到 `allowedUsers`）；`/introduce` 只登记 open_id **不授任何权**；`/grant` / `/revoke` 本身是 owner-only（校验 `senderOpenId === getOwnerOpenId`）。
 
-#### 4.4.4 ask-broker：权限提示桥按对话级授权
+#### 4.4.4 ask-broker：回答 agent 的提问走对话闸
 
-最值得细读的是 ask-broker。当底层 CLI（如 Claude Code）需要工具授权时，botmux 把它变成飞书可点卡片，再把人的选择回送给 CLI。这是一条跨进程、跨平台的多跳链路：
+agent 干到一半常会停下来问人：这两个方案选哪个、要不要连测试一起改。Claude Code 里这是 `AskUserQuestion` 工具。人不在终端前，这个问题得搬到飞书上，让群里的人点选项作答。ask-broker 就是干这件事的。
+
+它拦的不是工具权限审批。botmux 默认给 Claude Code 带上 `--dangerously-skip-permissions`，并在进程级 `--settings` 里设 `defaultMode: 'bypassPermissions'`（`src/adapters/cli/claude-code.ts:502-523`），所以默认配置下 CLI 根本不会弹"是否允许执行这条命令"。botmux 在全局 settings 里挂的是一个 `PreToolUse` hook，只认 `tool_name === 'AskUserQuestion'`，其他工具在解析这一步就返回 `null`，hook 不接手（`src/core/ask-hook/claude-code.ts:69-70`）。选 `PreToolUse` 而不是 `PermissionRequest`，是因为 bypass 模式下 `AskUserQuestion` 不经过权限请求，只有 `PreToolUse` 还会触发（`src/adapters/hook-installer.ts:142-144` 的注释）。
+
+整条链路跨了四个进程：
 
 ```mermaid
 sequenceDiagram
     participant C as Claude Code
-    participant W as worker
-    participant D as daemon (ask-broker)
+    participant H as botmux hook 子进程
+    participant D as daemon ask-broker
     participant U as 飞书用户
-    C->>W: 1. PreToolUse hook 发起提问
-    W->>D: 2. POST /api/asks
-    D->>D: 3. registerAsk：生成 askId+nonce、起超时
-    D->>U: 4. 派发可点卡片
-    U->>D: 5. 点选项（带 askId+nonce）
-    D->>D: 6. tryResolveAsk：校验 nonce + 是否已结算 + canTalk
-    D->>W: 7. 回送选择
-    W->>C: 8. hook stdout 喂回 {permissionDecision:'allow'}
+    C->>H: 1. PreToolUse hook 带 AskUserQuestion 的问题
+    H->>D: 2. POST /api/asks
+    D->>D: 3. registerAsk 生成 askId 和 nonce 并起超时
+    D->>U: 4. 派发可点选项卡片
+    U->>D: 5. 点选项 带 askId 和 nonce
+    D->>D: 6. tryResolveAsk 校验 nonce 和结算状态和 canTalk
+    D->>H: 7. 返回选中项
+    H->>C: 8. stdout 写回 updatedInput.answers
 ```
 
-第 6 步的校验有三道：`nonce` 对不上是过期卡片（旧轮的按钮）、已结算的拒绝重复点、最后才是 `isAuthorizedToAnswer` 的身份判定。
+hook 子进程是 Claude Code 按 settings 拉起的 `botmux hook`，它把问题 POST 给 daemon 后阻塞等结果（`src/cli.ts` 的 `runHook`）。第 6 步有三道校验：`nonce` 对不上说明是旧轮次的过期卡片；已经结算的拒绝重复点；最后才是身份判定。
 
-授权判定在 `src/core/ask-broker.ts:54`：
+身份判定在 `src/core/ask-broker.ts:54`：
 
 ```ts
 function isAuthorizedToAnswer(ask, by): boolean {
@@ -868,7 +875,21 @@ function isAuthorizedToAnswer(ask, by): boolean {
 }
 ```
 
-注释写明：回答 agent 的提问是**对话级交互**，所以走 `canTalk` 而非更严的 `canOperate`：talk-only 授权人也能帮 agent 点确认。`canTalkChecker` 在 daemon 启动时用 `evaluateTalk` 注入。结算后 hook 适配器拼出 `{ permissionDecision:'allow', updatedInput }` 的 JSON，从 hook stdout 喂回 Claude Code。这里的设计判断很关键：**ask 是 talk 级，命令是 operate 级**：围观者能帮 agent 点同意读这个文件，但不能跑 `/repo` 改工作目录。权限的粒度跟交互的性质对齐，而不是一刀切。
+源码注释把理由写明了：回答 agent 的提问是对话级交互，所以走 `canTalk`，不走更严的 `canOperate`。这和"跟 agent 说一句话"本质相同，能对话的人就该能答。`canTalkChecker` 在 daemon 启动时注入；没注入时返回 `false`，谁都答不了，默认拒绝。
+
+结算后，hook 适配器把选项映射回 label，拼成 `{ permissionDecision: 'allow', updatedInput: { questions, answers } }` 写到 stdout。这里的 `allow` 放行的是 `AskUserQuestion` 这个工具调用本身，答案通过 `updatedInput.answers` 塞回去，Claude Code 就当用户在终端里答过了。没有 botmux 会话或 daemon 不可达时，适配器输出空字符串，让问题退回终端里原生提问（`passthrough`，同文件 `:124-130`）。注释特意警告不能输出带空 answers 的 `allow`，那会把这次提问答成空。
+
+工具权限走的是另一条路。如果某个 bot 配了 `disableCliBypass: true`（`src/bot-registry.ts:86-90`），CLI 会在终端里弹原生的权限确认菜单。botmux 靠屏幕分析识别出这种 TUI 菜单，发一张 `tui_prompt` 卡片；卡片上的按钮最终是往 PTY 里按键（`tui_keys`），被列为敏感动作，要过 `canOperate`（`src/im/lark/card-handler.ts:1047` 的 `isSensitive` 列表）。
+
+两条路放在一起看，权限粒度跟着交互性质走：
+
+| 交互 | 实现 | 闸 |
+|---|---|---|
+| 回答 agent 的澄清提问 | `AskUserQuestion` → hook → ask-broker | `canTalk` |
+| 替 CLI 在终端里按键（含关闭 bypass 后的权限确认） | 屏幕分析 → `tui_prompt` 卡片 → `tui_keys` | `canOperate` |
+| 跑 `/repo`、`/cd` 等管理命令 | 命令分发 | `canOperate` |
+
+围观的同事可以回答 agent 问的"用方案 A 还是 B"，但不能替它在终端里按键批准一条命令，也不能改工作目录。
 
 #### 4.4.5 身份解析：按成本递增三档
 
@@ -878,7 +899,7 @@ function isAuthorizedToAnswer(ask, by): boolean {
 - **sender 事件**（免费）：消息事件自带发送者 open_id 和类型，`resolveSender` 就地记缓存。
 - **contact API**（要权限）：前两档都没命中才调 `contact.v3.user.get`（`fetchUserName`，`:215`）。这里有个务实处理：如果 app 没开 `contact:user.base:readonly` 权限，飞书返回 `99991672`，代码不会反复重试，而是**标记该 app 的这个 scope 不可用、之后直接降级到显示 open_id**（`:229`）。外部依赖一旦确认无权限就停止重试、优雅降级，而不是每条消息都撞一次墙。
 
-缓存按 appId 分文件（open_id 在飞书侧是 app-scoped 的）、防抖落盘。`core/role-resolver.ts` 的角色要和权限区分开，它不是权限层，而是注入 CLI prompt 的 persona（`roles/<appId>/<chatId>.md`，chat 级覆盖 team 级）。coder / reviewer 是角色不是权限：一个人可以被设成 reviewer 角色但根本不在 `allowedUsers` 里。把你是谁你扮演什么你能干什么三件事拆成 identity / role / permission 三套独立机制，是这套权限模型清楚的另一面。
+缓存按 appId 分文件（open_id 在飞书侧是 app-scoped 的）、防抖落盘。`core/role-resolver.ts` 的角色要和权限区分开，它不是权限层，而是注入 CLI prompt 的 persona（`roles/<appId>/<chatId>.md`，chat 级覆盖 team 级）。coder / reviewer 是角色不是权限：一个人可以被设成 reviewer 角色但根本不在 `allowedUsers` 里。"你是谁""你扮演什么""你能干什么"三件事拆成 identity / role / permission 三套独立机制，互不串用。
 
 Oncall 绑定（`/oncall bind`）是权限的一个便利出口：owner 把一个群绑到一个工作目录后，该群成员发消息自动以那个目录起会话、跳过选仓库卡片，且群成员获得 canTalk（但不升级 canOperate）。它的权限模型注释里写得很直白。绑 / 解绑只有 allowedUsers 能做，不搞 per-chat owner 列表，简单到底。
 
@@ -886,7 +907,7 @@ Oncall 绑定（`/oncall bind`）是权限的一个便利出口：owner 把一�
 
 前面四档都是飞书 open_id → 能不能的判定，但 Web 终端和 Dashboard 是浏览器入口，没有飞书身份可认，于是改用 token 分权，分三层：
 
-- **Web 终端写 token**：每个 worker 起来时随机生成一个 writeToken，可写链接带 `?token=`，握手校验通过才进 `authedClients`（4.3.5）。只读链接挂在群卡片上人人能看，可写链接经 `/term`（需 canOperate）私聊下发：身份闸（canOperate）和 token 闸在这里串联：先用飞书身份换取 token，再用 token 进网页。
+- **Web 终端写 token**：每个 worker 起来时随机生成一个 writeToken，可写链接带 `?token=`，握手校验通过才进 `authedClients`（4.3.5）。只读链接挂在群卡片上人人能看，可写链接经 `/term`（需 canOperate）私聊下发。身份闸和 token 闸在这里串联：先用飞书身份换取 token，再用 token 进网页。
 - **Dashboard 一次性 token**：`botmux dashboard` 出一个 token 落盘 `~/.botmux/.dashboard-token`（`dashboard.ts:99`），URL 带 `?t=`。token 持久化所以重启后旧链接还能用，只有再跑一次 `botmux dashboard`（命中 `/__cli/rotate`）才轮换、旧链接立刻失效。
 - **Dashboard ↔ daemon 的 HMAC 回环签名**：dashboard 要让某个 daemon mint 一个 web 终端写 token 时，用 `~/.botmux/.dashboard-secret` 对 `时间戳:nonce` 做 HMAC-SHA256 签进请求头（`dashboard.ts:202`），daemon 用同一份 secret 验。这样只有能读到这份 secret 的进程（即 dashboard 本身）才能签出有效请求；一个只知道 daemon 本地 ipcPort 的进程光靠 ipcPort 是签不出来的。本地回环也要签名，是因为能连上本地端口不等于有权操作：这条假设在多用户机器上尤其重要。
 
@@ -896,11 +917,11 @@ Oncall 绑定（`/oncall bind`）是权限的一个便利出口：owner 把一�
 
 - **两档 vs 多档**。只有 talk / operate 两档，换来极简和可推理（两个纯函数读完就懂全部规则）。代价是表达不了更细的粒度（比如能跑 `/repo` 但不能跑 `/relay`）。对比 Discord/Slack bot 动辄几十个 permission bit，botmux 赌的是自部署场景两档就够：这个赌注对它的用户画像是对的。
 - **open 模式人人是 owner**。没配白名单时 `canOperate` 直接返回 true。这是个危险的默认（谁进群谁能改工作目录），但它注释里清楚标了这是无信任根状态，且 `/grant` 在这个模式下变成 no-op。把危险默认显式化、文档化，比偷偷拒绝更诚实：但生产部署务必配 `allowedUsers`。
-- **per-bot env 净化**。`src/core/per-bot-env.ts:41` 定义 `RESERVED_ENV_PREFIXES = ['BOTMUX', 'LARK_APP_']`，再加一组具名保留键（`SESSION_DATA_DIR`、`IS_SANDBOX`、`CLAUDE_CONFIG_DIR`、`__OWNER_OPEN_ID` 等），任何 per-bot 自定义 env 命中前缀或保留键一律 `continue` 丢弃，连非法变量名、非原始类型值也一并滤掉（`sanitizePerBotEnv`，`:65`）。为什么要拦：这些键是 botmux 用来路由会话、定位 daemon、携带 bot 凭证的，一旦让用户配置覆盖，就能劫持会话身份、改写 CLI 的数据根、或冒充 owner。把系统保留的命名空间从用户可配的输入里硬性剔除，是任何让用户填环境变量的功能都该做的防御。但注释也老实交代：这只防串改、不防泄露：值仍明文存在 `bots.json` 和进程 env 里，不是密钥库。
+- **per-bot env 净化**。`src/core/per-bot-env.ts:41` 定义 `RESERVED_ENV_PREFIXES = ['BOTMUX', 'LARK_APP_']`，再加一组具名保留键（`SESSION_DATA_DIR`、`IS_SANDBOX`、`CLAUDE_CONFIG_DIR`、`__OWNER_OPEN_ID` 等），任何 per-bot 自定义 env 命中前缀或保留键一律 `continue` 丢弃，连非法变量名、非原始类型值也一并滤掉（`sanitizePerBotEnv`，`:65`）。为什么要拦：这些键是 botmux 用来路由会话、定位 daemon、携带 bot 凭证的，一旦让用户配置覆盖，就能劫持会话身份、改写 CLI 的数据根、或冒充 owner。把系统保留的命名空间从用户可配的输入里硬性剔除，是任何让用户填环境变量的功能都该做的防御。但注释也交代了：这只防串改、不防泄露，值仍明文存在 `bots.json` 和进程 env 里，不是密钥库。
 
 #### 4.4.8 两个纯函数就够的权限骨架
 
-我们写双闸权限的最小骨架，核心是两个纯函数，操作闸绝不读对话授权：
+双闸权限的最小骨架是两个纯函数，操作闸绝不读对话授权：
 
 ```ts
 interface BotPerm {
@@ -928,7 +949,7 @@ function canOperate(p: BotPerm, who: string): boolean {
   return p.allowedUsers.includes(who);        // 只认 allowedUsers
 }
 
-// 权限提示桥：回答 agent 的提问 = 对话级，走 canTalk
+// 回答 agent 的澄清提问 = 对话级，走 canTalk
 function canAnswerAsk(p: BotPerm, who: string): boolean {
   return canTalk(p, who);                      // 故意不是 canOperate
 }
@@ -946,7 +967,7 @@ function dispatch(cmd: string, p: BotPerm, who: string) {
 
 ## 5. 工程细节闲谈
 
-这一节是边角料里的好品味。先用一张表把六个"一句话就能带走"的小习惯过掉，再单独展开三个值得细看的子系统。
+先用一张表列六个小习惯，再单独展开三个子系统。
 
 ### 5.1 六个一句话小习惯
 
@@ -963,7 +984,7 @@ function dispatch(cmd: string, p: BotPerm, who: string) {
 
 ### 5.2 定时任务：中文怎么变成可靠的调度
 
-**一句话**：botmux 把"中文好写"和"调度可靠"两件容易打架的事捏到了一起。前面用正则把中文翻成 cron，后面用一个每几秒一跳的循环保证不重复、不漏炸。
+botmux 把"中文好写"和"调度可靠"两件容易打架的事放在了一起：前面用正则把中文翻成 cron，后面用一个每几秒一跳的循环保证不重复、不漏炸。
 
 入口是 `parseSchedule`（`scheduler.ts:184`），按优先级试探四种写法，归一成三种 kind：
 
@@ -978,11 +999,11 @@ function dispatch(cmd: string, p: BotPerm, who: string) {
 
 可靠性体现在 tick 循环（`scheduler.ts:344`，每几秒扫一遍 `schedules.json`）的三个细节：
 
-- **at-most-once（最多跑一次）**：周期任务在**执行之前**就把 `nextRunAt` 推到下一个点（`:378`），这样进程在任务跑一半时崩了，重启后也不会重复触发。**但要知道它的另一面**：这一次要是失败或崩了，就真没了：`markRun(false)` 只记个错，`nextRunAt` 早推走、不重试。拿它跑"必须成功"的巡检，得自己在任务里加重试或失败告警。
-- **错过了要不要补**：`computeGraceSeconds`（`:322`）按周期的一半算一个宽限窗。错过得不多就照常补跑一次；错过得超过宽限（比如机器睡了一整晚），就直接快进到下一个点、**不补**：免得开机瞬间把积压的几十次任务一次性轰出来。
+- **at-most-once（最多跑一次）**：周期任务在**执行之前**就把 `nextRunAt` 推到下一个点（`:378`），这样进程在任务跑一半时崩了，重启后也不会重复触发。**但要知道它的另一面**：这一次要是失败或崩了，就真没了——`markRun(false)` 只记个错，`nextRunAt` 早推走、不重试。拿它跑"必须成功"的巡检，得自己在任务里加重试或失败告警。
+- **错过了要不要补**：`computeGraceSeconds`（`:322`）按周期的一半算一个宽限窗。错过得不多就照常补跑一次；错过得超过宽限（比如机器睡了一整晚），就直接快进到下一个点、**不补**，免得开机瞬间把积压的几十次任务一次性轰出来。
 - **多 daemon 不打架**：每个 daemon 只管一个 bot，tick 里 `taskBelongsToThisDaemon`（`:350`）让它只触发属于自己 bot 的任务。同机器跑多个 bot 时靠归属过滤、而不是分布式锁来防重复触发，简单且够用。
 
-最后是"原话题延续"：`extractDeliveryMode`（`:273`）识别 prompt 开头有没有"新话题"这类关键词，没有就 `deliver='origin'`：到点在**原来那条话题**里继续发，而不是另起一条。一个每天跑的巡检，结果都落在同一条话题里顺着往下看，这个默认值是对的。`/schedule` 命令、对话里触发 `botmux-schedule` Skill、`botmux schedule add` CLI 三个入口最后都汇到这套 `parseSchedule` + tick。
+最后是"原话题延续"：`extractDeliveryMode`（`:273`）识别 prompt 开头有没有"新话题"这类关键词，没有就 `deliver='origin'`，到点在**原来那条话题**里继续发，而不是另起一条。一个每天跑的巡检，结果都落在同一条话题里顺着往下看。`/schedule` 命令、对话里触发 `botmux-schedule` Skill、`botmux schedule add` CLI 三个入口最后都汇到这套 `parseSchedule` + tick。
 
 ### 5.3 读全部、写隔离的文件沙箱
 
@@ -992,7 +1013,7 @@ oncall 这种群成员都能支使 agent 的场景，得防着 agent 改坏真�
 
 实现上，`buildSandboxArgs`（`sandbox.ts:151`）拼出的 bwrap 命令先 `--ro-bind / /` 把整个根挂成只读，再把 overlay 的 merged 目录 `--bind` 进来盖住工作区。想藏的敏感文件，per-bot 用 `sandboxHidePaths` 拿空文件 `--ro-bind` 盖掉即可。平台上 Linux 走 bubblewrap + overlayfs，macOS 复用 Anthropic 的 sandbox-exec。
 
-读放开、写收口，比读写都沙箱实现简单得多，又正好命中真实诉求：让 agent 能干活，但别毁现场。隔离粒度卡在这儿，值得抄。
+读放开、写收口，比读写都沙箱实现简单得多，又正好命中真实诉求：让 agent 能干活，但别毁现场。
 
 ### 5.4 自描述的用量账本
 
@@ -1005,7 +1026,7 @@ token 用量记在 `~/.botmux/usage/` 下按天分的 JSONL，每行是一条自
 { "recordId": "...", "ts": 1719300042, "sessionId": "abc12345", "deltaIn": 12847, "deltaOut": 482, "totalIn": 12847, "totalOut": 482 }
 ```
 
-让外部消费方（比如 kaboo 这类用量追踪器）能在第一笔正增量落地前就把这个会话从它自己的解析里排除。账本只追加不修改、每行自带全部上下文，外部工具直接 tail 就能消费，botmux 自己不往任何地方上传，这是给数据留出口但不绑定消费方的干净做法。
+让外部消费方（比如 kaboo 这类用量追踪器）能在第一笔正增量落地前就把这个会话从它自己的解析里排除。账本只追加不修改、每行自带全部上下文，外部工具直接 tail 就能消费，botmux 自己不往任何地方上传。数据留了出口，但不绑定消费方。
 
 ## 6. 适用边界与不该照搬的部分
 
@@ -1031,10 +1052,10 @@ token 用量记在 `~/.botmux/usage/` 下按天分的 JSONL，每行是一条自
 
 **哪些不要照搬**：
 
-- `DaemonSession` 50+ 字段的单一巨型状态类型。核心会话态（sessionId、worker 句柄、cliId、workingDir、scope）和飞书渲染态（streamCardId、currentImageKey、displayMode、frozenCards、tuiPromptCardId）揉在一个对象上，靠注释和IM 态外置的口头约定维持边界。迁移时该拆成两层：一个 IM-agnostic 的 `SessionCore`（会话身份 + 进程句柄 + CLI 状态），一个挂在 IM 适配器里的 `RenderState`（卡片 / 截图 / TUI 菜单）。这样换 IM 平台时只动 RenderState，core 不碰：这正是 botmux 自己嘴上说要做、但没在类型上落实的事。
+- `DaemonSession` 50+ 字段的单一巨型状态类型。核心会话态（sessionId、worker 句柄、cliId、workingDir、scope）和飞书渲染态（streamCardId、currentImageKey、displayMode、frozenCards、tuiPromptCardId）揉在一个对象上，靠注释和"IM 态外置"的口头约定维持边界。迁移时该拆成两层：一个 IM-agnostic 的 `SessionCore`（会话身份 + 进程句柄 + CLI 状态），一个挂在 IM 适配器里的 `RenderState`（卡片 / 截图 / TUI 菜单）。这样换 IM 平台时只动 RenderState，core 不碰。这正是 botmux 注释里说要做、但没在类型上落实的事。
 - 5000 行级的单文件 + 整段内嵌的前端 HTML。`worker.ts` 把 PTY 驱动、截图渲染、Web 终端的 HTML/JS 全塞在一个文件里，后果是命名空间拥挤、单元测试难写（一个文件几十个互相耦合的闭包）、前端代码没法走正常的打包和 tree-shaking。正确做法是把 Web 终端前端拆成独立的静态资源、把 backend 驱动和截图各自成模块。读它的时候靠 `grep` 函数名定位比靠文件结构定位高效，这本身就是组织有问题的信号。
 - `bots.json` 明文存 AppSecret 和第三方 key。值以明文躺在配置文件和进程环境里，本机任何能读这个文件或 `/proc/<pid>/environ` 的诊断工具都看得到。自部署自用没问题，但绝不要原样搬到多租户场景。要带凭证上生产，最起码用 sops/age 加密配置文件、或挂系统 keychain / 云厂商的 secret manager，运行时再解密注入。
-- open 模式默认全放行。没配 `allowedUsers` 时 `canOperate` 直接返回 true，等于谁进群谁能改工作目录、跑管理命令。这个默认对先跑起来试试友好，对生产危险。务必显式配 `allowedUsers` 建立信任根：否则 `/grant` 也会退化成 no-op（没有信任根就无所谓授权）。
+- open 模式默认全放行。没配 `allowedUsers` 时 `canOperate` 直接返回 true，等于谁进群谁能改工作目录、跑管理命令。这个默认对先跑起来试试友好，对生产危险。务必显式配 `allowedUsers` 建立信任根，否则 `/grant` 也会退化成 no-op（没有信任根就无所谓授权）。
 
 ## 7. 自己写一个 mini 版的路线图
 
@@ -1053,12 +1074,12 @@ token 用量记在 `~/.botmux/usage/` 下按天分的 JSONL，每行是一条自
 
 ## 8. 延伸阅读
 
-- [OpenClaw](https://github.com/openclaw/openclaw)（本系列另有精读）：同样是IM ↔ agent桥接，但走 Agent SDK 重建路线。和 botmux 对着读，能清楚看到桥接完整 CLI与基于 SDK 重造两条路线在能力、维护成本上的此消彼长。
+- [OpenClaw](https://github.com/openclaw/openclaw)：同样是 IM ↔ agent 桥接，但走 Agent SDK 重建路线。和 botmux 对着读，能看到"桥接完整 CLI"与"基于 SDK 重造"两条路线在能力、维护成本上的此消彼长。
 - [ttyd](https://github.com/tsl0922/ttyd) / [gotty](https://github.com/yudai/gotty)：把本地终端通过 WebSocket 暴露成网页 xterm.js 的成熟实现。botmux 的 Web 终端是同一思路，读 ttyd 能看到单纯的 Web 终端最干净的样子，对比出 botmux 多做的截图投影 + token 分权。
-- [mitmproxy](https://github.com/mitmproxy/mitmproxy) 与本书 claude-tap 一章：同属拦截 / 投影一个不是自己写的进程的 I/O这一类问题，一个拦 HTTPS 流量、一个投终端画面，方法论可互相印证。
+- [mitmproxy](https://github.com/mitmproxy/mitmproxy) ：同属"拦截或投影一个不是自己写的进程的 I/O"这一类问题，一个拦 HTTPS 流量、一个投终端画面，方法论可互相印证。
 - [tmux](https://github.com/tmux/tmux) 的 `pipe-pane` / `capture-pane` 文档：4.2.3 的零侵入观察全靠这两个命令，读一遍 man page 能理解为什么 botmux 选 pipe 而不是 attach。
 - node-pty、`@xterm/headless`、`@napi-rs/canvas` 三个库的 README：本章终端投影的全部依赖。先记住它们在 botmux 里的分工再去读会更快：node-pty 是 PTY master（给 CLI 一个真终端、收发原始字节），`@xterm/headless` 是终端状态机（把 ANSI 字节流喂进去，维护一个无显示的屏幕缓冲区），`@napi-rs/canvas` 是无头渲染器（把那个缓冲区逐格画成 PNG）。三句话建好分工模型，再动手实现 mini 版能省掉大量踩坑。
 
 ---
 
-本文基于 botmux tag `v2.93.1`（commit `1d24e82a`）写就。项目仍在快速迭代，CLI 适配器和后端实现会持续增减，但本章拆解的四个核心模式：三轴适配器、进程脱离常驻、无头终端投影、双闸权限，是结构性的，预计在后续版本里保持稳定。读源码时如遇行号漂移，按文中给出的函数名和文件名重新定位即可。
+本文基于 botmux tag `v2.93.1`（commit `1d24e82a`）写就。项目仍在快速迭代，CLI 适配器和后端实现会持续增减，但本章拆解的四个核心模式（三轴适配器、进程脱离常驻、无头终端投影、双闸权限）是结构性的，预计在后续版本里保持稳定。读源码时如遇行号漂移，按文中给出的函数名和文件名重新定位即可。

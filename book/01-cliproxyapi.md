@@ -6,7 +6,7 @@ based_on_commit: 3a54fb7
 written_at: 2026-05-31
 learning_objectives:
   - 能用 registry + init() 自注册 + gjson/sjson 路径读写，实现一个不靠中间结构体的 N×M 协议翻译矩阵，新增一种协议不改任何旧代码
-  - 能实现一个管理"带配额、会过期的远端凭证池"的控制平面：统一 executor 接口 + fill-first 调度 + 模型级冷却 + 后台自动 refresh
+  - 能实现一个管理"带配额、会过期的远端凭证池"的控制平面：统一 executor 接口 + 可切换的调度策略（滚动窗口配额下用 fill-first）+ 模型级冷却 + 后台自动 refresh
   - 能给一个长驻服务做零停机的配置 / 凭证热更新：fsnotify + 内容哈希 + 防抖 + 原子替换检测四道关层层兜底
 feishu_url: "https://fivwvysqdz.feishu.cn/wiki/CyLiwwUsSikLVyk5xB2cncMXnub"
 last_synced: "2026-08-02"
@@ -26,15 +26,21 @@ last_synced: "2026-08-02"
 - 写个评测脚本批量调模型，而脚本里是 `openai.OpenAI(base_url=...)`
 - 几个人凑一份团队订阅轮着用，而不是各买各的 API quota
 
-挡在中间的是两道墙：**凭证格式各家不同**（Claude 用 PKCE（OAuth 防重放扩展，客户端本地生成随机 verifier 自证身份）存 `~/.claude/.credentials.json`，Codex 存 `access_token + account_id`，Gemini 走浏览器回调 OAuth，和 Claude / Codex 同类型），**协议格式也各家不同**（你的客户端讲 OpenAI，后端 CLI 讲 Anthropic 或 Gemini）。CLIProxyAPI 把这两道墙都拆了：进来的请求可以是 6 种协议里的任意一种，出去对接的后端凭证也可以是任意一种，中间自动翻译、自动选账号、自动续期。
+挡在中间的是两道墙。
+
+第一道是**凭证各家不同**。三家都走 OAuth，但登录流程和落盘格式各不相同：Claude 的凭证存在 `~/.claude/.credentials.json`，Codex 存的是 `access_token` 加 `account_id`，Gemini 走浏览器回调。
+
+第二道是**协议各家不同**。你的客户端讲 OpenAI 协议，后端 CLI 讲的是 Anthropic 或 Gemini 协议。
+
+CLIProxyAPI 把两道墙都拆了：进来的请求可以是 OpenAI、Anthropic、Gemini 等几种协议之一，出去对接的后端凭证也可以是任意一种，中间自动翻译、自动选账号、自动续期。
 
 ### 1.2 三个可迁移工程模式
 
-这一章我们要拆的不是"CLIProxyAPI 有多全"，而是它解决三类通用问题的工程手法。这三个模式都能脱离本项目独立成立：
+它处理的三类问题，离开这个项目同样存在：
 
 1. **N×M 协议翻译矩阵**。只要你的系统要在多种外部协议之间互转（支付网关对接多家渠道、IM 机器人对接多个平台、BI 工具读多种数据源），就会撞到"翻译对子数量爆炸 + 上游字段天天变"这道题。CLIProxyAPI 的答案是 registry 自注册 + 在原始 JSON 上路径读写，不构造中间结构体。
 
-2. **带配额的远端凭证池控制平面**。任何"管理一组会过期、有配额、需要轮转的远端凭证"的场景（多 GitHub token 轮转、多云子账号路由、多账号订阅复用）都是同一个问题。CLIProxyAPI 把它抽成一个统一 executor 接口 + 中心 Manager，调度策略专门为"滚动窗口配额"挑了 fill-first。
+2. **带配额的远端凭证池控制平面**。任何"管理一组会过期、有配额、需要轮转的远端凭证"的场景（多 GitHub token 轮转、多云子账号路由、多账号订阅复用）都是同一个问题。CLIProxyAPI 把它抽成一个统一 executor 接口 + 中心 Manager，调度策略可切换：默认 round-robin，另提供专为"滚动窗口配额"设计的 fill-first。
 
 3. **零停机配置 / 凭证热更新**。任何长驻服务都不想"改个配置就重启、重启就杀掉所有在途请求"。CLIProxyAPI 用 fsnotify + 内容哈希 + 防抖 + 原子替换检测四道关，做出了一套真能上生产的热重载。
 
@@ -49,7 +55,7 @@ cd CLIProxyAPI
 
 ## 2. 5 分钟跑起来
 
-我们走最快的路径 Docker，配置和凭证都挂在宿主机目录里：
+先在宿主机建一个目录放配置和凭证，本地二进制和 Docker 都从这里读：
 
 ```bash
 mkdir -p ~/cli-proxy/auth
@@ -65,7 +71,7 @@ cp config.example.yaml ~/cli-proxy/config.yaml   # 仓库里有这个模板
 ./cli-proxy-api --login               # Gemini / Google
 ```
 
-`cmd/server/main.go:82-90` 列了全部登录开关：`--login`（Gemini）、`--codex-login`、`--claude-login`、`--antigravity-login`、`--kimi-login`、`--xai-login`。每个对应 `auths/` 下一个目录里的具体 OAuth flow。
+`cmd/server/main.go:82-90` 列了全部登录开关：`--login`（Gemini）、`--codex-login`、`--claude-login`、`--antigravity-login`、`--kimi-login`、`--xai-login`。每个对应 `internal/auth/` 下一个目录里的具体 OAuth flow。
 
 `config.yaml` 关键就几行：
 
@@ -97,11 +103,11 @@ resp = client.chat.completions.create(
 print(resp.choices[0].message.content)
 ```
 
-入站协议由路径决定，`internal/api/server.go:386-416` 注册了四组：`/v1/chat/completions`（OpenAI）、`/v1/messages`（Anthropic）、`/v1/responses`（Codex Responses）、`/v1beta/models/*`（Gemini）。同一份后端凭证，四种客户端 SDK 都能调，协议翻译在中间自动完成，这就是第 4.1 节的主角。
+入站协议由路径决定，`internal/api/server.go:386-416` 注册了四组面向 SDK 的入口：`/v1/chat/completions`（OpenAI）、`/v1/messages`（Anthropic）、`/v1/responses`（Codex Responses）、`/v1beta/models/*`（Gemini），`:431` 另有一个给 Gemini CLI 用的 `/v1internal:method`。同一份后端凭证，这几种客户端都能调，协议翻译在中间自动完成，这是第 4.1 节的主角。
 
 ## 3. 全景架构
 
-一次请求从客户端到上游再回来，穿过五层。我们先看这张数据流图，带着它读后面三节：
+一次请求从客户端到上游再回来，穿过五层，如下图。后面三节分别放大其中一段：
 
 ```mermaid
 sequenceDiagram
@@ -124,20 +130,20 @@ sequenceDiagram
 
 | 区块 | 位置 | 规模 | 职责 |
 |---|---|---|---|
-| 协议翻译 | `internal/translator/` | ~1.5 万行，27 个翻译对子 | 入站 6 协议 ↔ 出站 4 格式互翻 |
+| 协议翻译 | `internal/translator/` | ~1.5 万行，27 个翻译对子 | 5 种入站格式 × 6 种出站格式，按需注册 |
 | 凭证池核心 | `sdk/cliproxy/auth/` | `conductor.go` 单文件 4455 行 + scheduler/selector/refresh | 选 / 执行 / 冷却 / refresh / 持久化 |
 | 执行器 | `sdk/cliproxy/executor/` | — | 把"调某个后端"抽象成统一接口 |
 | 热更新 | `internal/watcher/` | ~1100 行 | 监听 config 和 auth 目录，零停机重载 |
 | HTTP server | `internal/api/` | 基于 Gin | 路由 + 鉴权 + handler |
-| OAuth flows | `auths/` | 每个后端一个目录 | claude / codex / gemini / antigravity / kimi / xai 各自的登录实现 |
+| OAuth flows | `internal/auth/` | 每个后端一个目录 | claude / codex / gemini / antigravity / kimi / xai 各自的登录实现 |
 
-整个项目由四个抽象贯穿，认得它们就认得全局：
+贯穿整个项目的是四个抽象：
 
 | 抽象 | 位置 | 一句话定位 |
 |---|---|---|
 | `translator.Registry` | `sdk/translator/registry.go:128` | 全局翻译注册表，`Register(from, to, reqFn, respFn)` 自注册 |
 | `auth.Manager`（代码里类型叫 Manager，文件叫 conductor） | `sdk/cliproxy/auth/conductor.go` | 凭证池控制平面：选 / 执行 / 冷却 / refresh / 持久化 |
-| `ProviderExecutor` | `sdk/cliproxy/auth/conductor.go:32` | 一个后端要实现的 5 方法接口，Manager 只认它 |
+| `ProviderExecutor` | `sdk/cliproxy/auth/conductor.go:32` | 一个后端要实现的 6 方法接口，Manager 只认它 |
 | `Watcher` | `internal/watcher/watcher.go:32` | 监听文件变化，触发热重载 |
 
 `translator.Registry` 是协议层，`Manager + ProviderExecutor` 是凭证 / 调度层，`Watcher` 是运维层。这三层正好对应 1.2 节的三个模式，下面逐个拆开。
@@ -152,7 +158,7 @@ sequenceDiagram
 
 OpenAI 的 `tool_calls`、Anthropic 的 `tool_use`、Gemini 的 `function_call`、Codex Responses 的 `output_item`，表达的是同一件事（模型要调工具），但字段名、嵌套结构、流式切分全不一样。把一种翻成另一种，单看不难；难的是三件事叠在一起：
 
-- **数量爆炸**：6 种入站、4 种出站，两两组合是几十个翻译对子。
+- **数量爆炸**：按 v7.1.32 的目录算，入站 5 种格式、出站 6 种格式，实际注册了 27 个翻译对子。
 - **上游天天加字段**：OpenAI 加 `reasoning_effort`、Anthropic 加 `thinking.budget_tokens`、Codex 加新的 `output_item` 类型，每隔几周就来一次。
 - **流式 chunk 边界对不齐**：Anthropic 是 `content_block_start` + 多个 `content_block_delta` + `content_block_stop` 的块结构，OpenAI 是一条扁平的 `delta` 流。这不是字段名不同，是**切分粒度不同**。
 
@@ -168,7 +174,7 @@ LiteLLM 的 hub-and-spoke 看起来更省代码，实测痛点在于：每个 pr
 
 #### 4.1.3 CLIProxyAPI 的选择：registry + init() 自注册
 
-它选了 N×M 直接翻译。我们从注册入口看起，在 `sdk/translator/registry.go:128`：
+它选了 N×M 直接翻译。注册入口在 `sdk/translator/registry.go:128`：
 
 ```go
 func Register(from, to Format, request RequestTransform, response ResponseTransform) { /* 塞进全局 map */ }
@@ -218,7 +224,7 @@ import (
 
 #### 4.1.4 关键代码：在原始 JSON 上"取-改-塞"
 
-翻译函数本身才是精华。我们看 Claude → OpenAI 的请求转换，`internal/translator/openai/claude/openai_claude_request.go:23`：
+翻译逻辑在各个转换函数里。以 Claude → OpenAI 的请求转换为例，`internal/translator/openai/claude/openai_claude_request.go:23`：
 
 ```go
 func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream bool) []byte {
@@ -252,17 +258,17 @@ case "enabled":
     }
 ```
 
-Claude 给的是 token 数（`budget_tokens`），OpenAI 要的是等级字符串（`low/medium/high`），两个厂商对"思考预算"的建模颗粒度根本不一样，翻译器只能做**有损映射**。这种 edge case README 里不会写，只有读到这一行才知道作者怎么兜的。也正是中间 IR 方案最难处理的地方（IR 该存数字还是等级？存哪个都丢信息）。
+Claude 给的是 token 数（`budget_tokens`），OpenAI 要的是等级字符串（`low/medium/high`），两个厂商对"思考预算"的建模颗粒度根本不一样，翻译器只能做**有损映射**。README 里不会写这种边界情况。它也是中间 IR 方案最难处理的地方：IR 该存数字还是等级？存哪个都丢信息。
 
 #### 4.1.5 取舍：N×M 真的扩展不下去，但被注册表拦住了扩散
 
 直接写 N×M 的代价是诚实的：按当前协议数，再加一种新协议至少要补十几个翻译对子。这看起来比 LiteLLM 的 2N 差。
 
-但两个力量把它拉回务实区间：一是**协议是别人定义的、语义不可控**，IR 方案省下的翻译器数量会被"IR 永远在追新字段"吃回去；二是**注册表 + 独立目录把扩散挡住了**：新增一种协议的工作量虽大，但全部集中在新目录里，旧代码零改动，不会污染。换句话说，它没有消除 N×M 的复杂度，而是把复杂度**关进了局部**。对一个要长期追上游、协议天天变的项目，"改动局部化"比"代码总量少"更值钱。
+但两个力量把它拉回务实区间：一是**协议是别人定义的、语义不可控**，IR 方案省下的翻译器数量会被"IR 永远在追新字段"吃回去；二是**注册表 + 独立目录把扩散挡住了**：新增一种协议的工作量虽大，但全部集中在新目录里，旧代码零改动，不会污染。N×M 的复杂度没有消失，只是被**关进了局部**。对一个要长期追上游、协议天天变的项目，改动局部化比代码总量少更要紧。
 
 #### 4.1.6 自己写一个最小翻译矩阵
 
-核心就两样：一个注册表，一组在原始 JSON 上读写的翻译函数。我们用 Python 写一版，40 行能跑通骨架：
+核心就两样：一个注册表，一组在原始请求上改字段的翻译函数。Python 版的骨架如下：
 
 ```python
 import json
@@ -282,14 +288,17 @@ def translate(src: str, dst: str, raw: dict) -> dict:
         return raw
     return _REGISTRY[(src, dst)](raw)
 
-# 一个方向：Claude 请求 → OpenAI 请求（只动关心的字段，其余透传思路同 gjson）
+# 一个方向：Claude 请求 → OpenAI 请求
 @register("claude", "openai")
 def claude_to_openai(req: dict) -> dict:
-    out = {"model": req["model"], "messages": req["messages"]}
-    if "max_tokens" in req:
-        out["max_tokens"] = req["max_tokens"]
+    out = dict(req)                        # 先整体拷贝：不认识的字段原样透传
+    # system 在 Claude 里是顶层字段，OpenAI 要放进 messages 第一条
+    system = out.pop("system", None)
+    if system:
+        out["messages"] = [{"role": "system", "content": system}] + list(out["messages"])
     # 有损映射：thinking budget(数字) → reasoning effort(等级)
-    budget = req.get("thinking", {}).get("budget_tokens")
+    thinking = out.pop("thinking", None) or {}
+    budget = thinking.get("budget_tokens")
     if budget is not None:
         out["reasoning_effort"] = "high" if budget > 8000 else "medium" if budget > 2000 else "low"
     return out
@@ -299,13 +308,13 @@ def claude_to_openai(req: dict) -> dict:
 
 要逼近 CLIProxyAPI 的性能，把 `dict` 换成 gjson/sjson 那种路径读写库（JS 用 `jsonpath` 系，Go 直接用 tidwall 那两个），就不必整体反序列化。流式响应要再单独写一组 SSE 累积器，把 chunk 化的响应攒成完整快照，那是另一类活，这里不展开。
 
-### 4.2 凭证池控制平面：统一 executor 接口 + fill-first 调度
+### 4.2 凭证池控制平面：统一 executor 接口 + 可切换调度策略
 
-**一句话总结**：把"管理一堆会过期、有配额、要轮转的凭证"做成一个中心控制平面：所有后端实现同一个接口，Manager 只管选谁、调谁、谁该冷却、谁该续期；调度策略专门为"滚动窗口配额"挑了反直觉的 fill-first。
+**一句话总结**：把"管理一堆会过期、有配额、要轮转的凭证"做成一个中心控制平面。所有后端实现同一个接口，Manager 只管选谁、调谁、谁该冷却、谁该续期。调度策略默认 round-robin，针对滚动窗口配额另备了一个反直觉的 fill-first。
 
 #### 4.2.1 问题：凭证管理是组合爆炸
 
-单个 OAuth 凭证就够烦：会过期要 refresh、有配额会触顶。再叠上"5 种后端 × 每种多账号 × 每个账号对不同模型状态不同"，复杂度直接爆炸。一个 Claude 账号可能 sonnet 打满了但 haiku 还能用；另一个账号可能配额临时 down 但 token 还有效，不需要 refresh 只需要等。把这些状态全摊在请求路径上写 if/else，几周后没人敢动。
+单个 OAuth 凭证就够烦：会过期要 refresh、有配额会触顶。再叠上"多种后端 × 每种多账号 × 每个账号对不同模型状态不同"，复杂度直接爆炸。一个 Claude 账号可能 sonnet 打满了但 haiku 还能用；另一个账号可能配额临时 down 但 token 还有效，不需要 refresh 只需要等。把这些状态全摊在请求路径上写 if/else，几周后没人敢动。
 
 #### 4.2.2 各后端各写一套 vs channel 模型 vs 统一 executor
 
@@ -313,11 +322,11 @@ def claude_to_openai(req: dict) -> dict:
 |---|---|---|---|
 | 每个后端各写一套 | claude 一个模块、codex 一个模块，各自管自己的 refresh / 轮询 | 改一个不影响别的 | 轮询、冷却、退避逻辑重复 N 遍，行为不一致 |
 | channel 模型（one-api / new-api） | 每个上游凭证是一条 channel，带 weight，按加权轮询；失败禁用 channel | 成熟、面向计费、有后台管理 | 调度是 stateless 的加权轮询，不感知"远端滚动窗口配额"这种有状态约束 |
-| 统一 executor 接口 + 中心 Manager（CLIProxyAPI） | 所有后端实现同一个 5 方法接口，Manager 统一选 / 调 / 冷却 / refresh | 调度逻辑只写一遍；能做模型级、配额感知的精细调度 | Manager 成为单点，状态机复杂（conductor.go 4455 行） |
+| 统一 executor 接口 + 中心 Manager（CLIProxyAPI） | 所有后端实现同一个 6 方法接口，Manager 统一选 / 调 / 冷却 / refresh | 调度逻辑只写一遍；能做模型级、配额感知的精细调度 | Manager 成为单点，状态机复杂（conductor.go 4455 行） |
 
 #### 4.2.3 CLIProxyAPI 的选择：一个接口 + 一个搬运契约
 
-我们要让每个后端实现的，是 `sdk/cliproxy/auth/conductor.go:32` 的接口：
+每个后端要实现的是 `sdk/cliproxy/auth/conductor.go:32` 的接口：
 
 ```go
 type ProviderExecutor interface {
@@ -332,7 +341,7 @@ type ProviderExecutor interface {
 
 Manager 完全不关心"Claude 的 OAuth 怎么 refresh""Codex token 长什么样"，只关心"能不能从这个 executor 拿到响应，失败了能不能调 `Refresh` 救活"。后端的脏活全封在各自的实现里。
 
-Manager 和 executor 之间搬运的是 `Auth` 结构（`sdk/cliproxy/auth/types.go:47`），它的字段设计是这个模块最值得抄的地方：
+Manager 和 executor 之间搬运的是 `Auth` 结构（`sdk/cliproxy/auth/types.go:47`），字段设计里有三处分离：
 
 ```go
 type Auth struct {
@@ -348,20 +357,22 @@ type Auth struct {
 }
 ```
 
-这里要分清两层状态，源码里也是分开的：`Status` 是**整个 Auth 的生命周期状态**（`status.go:8-18`，取值 `unknown / active / pending / refreshing / error / disabled`，其中 `unknown` 是零值兜底、正常运行只会见到后五种）；而"某个模型现在能不能用、是不是在冷却"是**调度器层的按模型状态**，由 `scheduler.go:27-30` 的 `scheduledState` 枚举（`Ready / Cooldown / Blocked / Disabled`）管理。下面这张图画的是后者，我们跟着它看一个 Auth 对某个具体模型的调度状态怎么流转：
+这里要分清两层状态，源码里也是分开的：`Status` 是**整个 Auth 的生命周期状态**（`status.go:8-18`，取值 `unknown / active / pending / refreshing / error / disabled`，其中 `unknown` 是零值兜底、正常运行只会见到后五种）；而"某个模型现在能不能用、是不是在冷却"是**调度器层的按模型状态**，由 `scheduler.go:27-30` 的 `scheduledState` 枚举（`Ready / Cooldown / Blocked / Disabled`）管理。下面这张图画的是后者，即一个 Auth 对某个具体模型的调度状态怎么流转：
 
 ```mermaid
 stateDiagram-v2
     [*] --> Ready
     Ready --> Cooldown: 该模型配额触顶 429
     Cooldown --> Ready: resetIn 到期
-    Ready --> Blocked: token 刷新中 暂不可调
-    Blocked --> Ready: 刷新完成
+    Ready --> Blocked: 非配额原因失败 进入退避
+    Blocked --> Ready: 退避到期
     Ready --> Disabled: 该 Auth 被禁用
     Disabled --> Ready: 重新启用
 ```
 
-这里我们要注意，Cooldown 是挂在某个模型上的，不是整个 Auth。同一时刻同一个 Auth 对 sonnet 可能在 Cooldown、对 haiku 还是 Ready，正因如此调度状态才要按模型存。回到 `Auth` 结构本身，三处字段分离是这个模块最值得抄的精度，每处都被实战逼出来：
+Cooldown 和 Blocked 的区别在失败原因：`selector.go:395-406` 里，模型状态带着 `NextRetryAfter` 时，如果是配额触顶（`Quota.Exceeded`）就判为 Cooldown，其他原因的失败退避一律判为 Blocked（`scheduler.go:692-704`）。两者都挂在某个模型上，不是整个 Auth。同一时刻同一个 Auth 对 sonnet 可能在 Cooldown、对 haiku 还是 Ready，所以调度状态要按模型存。
+
+回到 `Auth` 结构本身，三处字段分离各有用处：
 
 - **`Attributes` vs `Metadata`**：不变配置和可变状态分开，前者改动才需要落盘。
 - **`Disabled`（意图）vs `Unavailable`（状态）**：操作员关掉的账号和临时配额触顶的账号，恢复逻辑完全不同，不能用一个 bool 表达。
@@ -369,7 +380,7 @@ stateDiagram-v2
 
 #### 4.2.4 关键代码：fill-first 选择器与模型级冷却
 
-我们把调度拆成两层来看：Scheduler（`scheduler.go`，维护"哪个 auth 对哪个 model 处于 ready/cooldown"）和 Selector（`selector.go`，从 ready 集合里挑一个）。内置两种策略，`scheduler.go:18-20`：
+调度分两层：Scheduler（`scheduler.go`，维护"哪个 auth 对哪个 model 处于 ready/cooldown"）和 Selector（`selector.go`，从 ready 集合里挑一个）。内置两种策略（外加自定义），`scheduler.go:18-20`：
 
 ```go
 schedulerStrategyCustom schedulerStrategy = iota
@@ -377,7 +388,7 @@ schedulerStrategyRoundRobin
 schedulerStrategyFillFirst
 ```
 
-精华在 fill-first 的注释里，`selector.go:33-36`：
+默认用 round-robin（`config.example.yaml:119`：`strategy: "round-robin" # round-robin (default), fill-first`）。fill-first 为什么存在，写在它的注释里，`selector.go:33-36`：
 
 ```go
 // FillFirstSelector selects the first available credential (deterministic ordering).
@@ -386,7 +397,7 @@ schedulerStrategyFillFirst
 type FillFirstSelector struct{}
 ```
 
-这是一个**反直觉但正确**的选择。负载均衡器默认 round-robin（雨露均沾），是因为后端通常 stateless。但订阅配额是"5 小时滚动窗口内最多 X 条消息"这种 sliding window（滑动窗口限流），是 stateful 的。如果 round-robin 把 5 个账号都打到 80%，会出现某一刻五个账号同时触顶、全线瘫痪。**fill-first 故意把一个账号烧到接近上限、让它进冷却，再切下一个**，这样各账号的冷却窗口错开，任何时刻都有账号可用。这是只有真运营过多账号订阅才会想到的取舍。
+这个策略反直觉。负载均衡器通常用 round-robin 把流量摊匀，前提是后端没有状态。订阅配额却是"5 小时滚动窗口内最多 X 条消息"这种滑动窗口限流，是有状态的。round-robin 会把 5 个账号同时推到 80%，然后在某一刻一起触顶。**fill-first 先把一个账号用到触顶、让它进冷却，再切下一个**，各账号的冷却窗口因此错开，任何时刻都更可能有账号可用。
 
 冷却是**模型级**的，`selector.go:47`：
 
@@ -399,28 +410,37 @@ type modelCooldownError struct {
 // "All credentials for model gpt-5.5 are cooling down via provider codex"
 ```
 
-一个 auth 可以对 `gpt-5.5` 冷却但 `gpt-4o-mini` 还能用。和上面 `Auth.ModelStates` 的设计一以贯之，分层状态机贯穿始终。
+一个 auth 可以对 `gpt-5.5` 冷却但 `gpt-4o-mini` 还能用。这和上面 `Auth.ModelStates` 按模型存状态是同一个设计。
 
 至于"凭证过期"这种异步事件，单独有个后台循环兜（`auto_refresh_loop.go:13`）：一个**最小堆 + worker pool**，主循环按 `NextRefreshAfter` 时间出堆，把到期的 authID 推进 channel，16 个 worker 取出来调 `Refresh`。堆操作 O(log n)、worker 数固定，1000 个账号也不会失控。
 
 #### 4.2.5 取舍：fill-first vs 加权轮询，谁对要看后端是否有状态
 
-one-api / new-api 这类计费导向的网关默认加权轮询，因为它们面对的是"按量付费的 API key"，后端基本 stateless，把流量按 weight 摊开最公平。CLIProxyAPI 默认 fill-first，因为它面对的是"订阅滚动窗口"，后端是 stateful 的，必须错开触顶时间。
+one-api / new-api 这类计费导向的网关默认加权轮询，因为它们面对的是"按量付费的 API key"，后端基本 stateless，把流量按 weight 摊开最公平。CLIProxyAPI 默认也是 round-robin，但把 fill-first 做成一行配置就能切换的选项（`routing.strategy: fill-first`），留给"订阅滚动窗口"这种有状态后端：那时需要错开各账号的触顶时间。
 
-**没有哪个绝对正确，判据是后端有没有状态**。你做调度时第一个该问的问题不是"轮询还是随机"，而是"后端的限流是 per-request 的还是 per-window 的"。前者用 round-robin，后者得用 fill-first 这类"逐个烧"的策略。这个判断本身比代码更值得带走。
+**没有哪个绝对正确，判据是后端有没有状态**。你做调度时第一个该问的问题不是"轮询还是随机"，而是"后端的限流是 per-request 的还是 per-window 的"。前者用 round-robin，后者该考虑 fill-first 这类"逐个烧"的策略。
 
 #### 4.2.6 自己写一个最小凭证池
 
-抓住三件事：统一接口、按模型选可用凭证、fill-first 顺序。Python 骨架约 60 行：
+抓住三件事：统一接口、按模型选可用凭证、fill-first 顺序。Python 骨架约 40 行：
 
 ```python
 import time
 from dataclasses import dataclass, field
+from typing import Callable
+
+class QuotaError(Exception):              # 后端返回 429：带上配额恢复还要多久
+    def __init__(self, reset_in: float):
+        super().__init__(f"quota exceeded, reset in {reset_in}s")
+        self.reset_in = reset_in
+
+class AuthExpired(Exception):             # 后端返回 401：token 过期
+    pass
 
 @dataclass
 class Cred:
     name: str
-    refresh: callable                       # 续期函数，凭证自己提供
+    refresh: Callable[[], None]             # 续期函数，凭证自己提供
     cooldown_until: dict[str, float] = field(default_factory=dict)  # model -> 解冻时间
     disabled: bool = False
 
@@ -438,7 +458,7 @@ class CredPool:
             return c
         raise RuntimeError(f"all creds cooling down for {model}")
 
-    def execute(self, model: str, call: callable):
+    def execute(self, model: str, call: Callable):
         c = self.pick(model)
         try:
             return call(c)                  # call 里若 401 就触发 refresh，若 429 就冷却
@@ -454,7 +474,7 @@ class CredPool:
 
 ### 4.3 配置 / 凭证热更新：四道关层层兜底
 
-**一句话总结**：让一个长驻服务"改配置不重启、换 token 不断流"，光监听文件变化远远不够：真正能上生产的版本要叠四道关：防抖合并密集事件、内容哈希过滤无效触发、原子替换检测识破"假删除"、批量变更再防抖一次。
+**一句话总结**：让一个长驻服务"改配置不重启、换 token 不断流"，光监听文件变化远远不够。能上生产的版本要叠四道关——防抖合并密集事件、内容哈希过滤无效触发、原子替换检测识破"假删除"、批量变更再防抖一次。
 
 #### 4.3.1 问题：重启大法会杀掉在途请求
 
@@ -485,7 +505,7 @@ graph TB
     F --> H[哈希不同 执行 reload 完再算一次哈希]
 ```
 
-灵魂是 `internal/watcher/watcher.go:83-86` 这四个常量，每个都对应一个具体踩过的坑：
+四道关的参数是 `internal/watcher/watcher.go:83-86` 这四个常量，各对应一种文件系统噪声：
 
 ```go
 replaceCheckDelay        = 50 * time.Millisecond   // 等原子替换的 Create 追上来
@@ -526,7 +546,7 @@ func (w *Watcher) reloadConfigIfChanged() {
 }
 ```
 
-注意结尾那句"reload 完再算一次哈希"，我们看它在防什么，它在防一个时间窗：reload 过程中文件可能又被改了，用旧哈希记录会导致下次真变化被漏掉。**防抖 + 哈希两道关合起来，才拿到"只在真有内容变化时 reload"的语义**，这比"只防抖"或"只哈希"都高一个等级。
+结尾那句"reload 完再算一次哈希"防的是一个时间窗：reload 过程中文件可能又被改了，如果记下旧哈希，下一次真正的变化会被当成"没变"漏掉。**防抖 + 哈希合起来，才能做到只在内容真的变化时 reload**。只防抖挡不住内容没变的事件，只哈希挡不住一次保存触发的多个事件。
 
 #### 4.3.5 自己写一个最小热重载器
 
@@ -565,7 +585,7 @@ class ReloadHandler(FileSystemEventHandler):
 
 ## 5. 几个工程细节
 
-读源码时顺手记下的几个工程细节，单拎不够一节，合成一张表：
+几个撑不起一节、但可以带走的工程细节：
 
 | 习惯 | 项目怎么做 | 可迁移到哪 |
 |---|---|---|
@@ -609,15 +629,15 @@ class ReloadHandler(FileSystemEventHandler):
 把三个模式串起来，1-2 周能落地一个"单后端、单账号"的迷你版，再逐步加宽：
 
 - **阶段一（2-3 天）：翻译矩阵**。先做 OpenAI ↔ Claude 双向，registry + 两个翻译函数（4.1.6 的骨架），用 gjson/sjson 类库在原始 JSON 上读写。跑通"OpenAI SDK 调 Claude 后端"这一条路。
-- **阶段二（3-4 天）：凭证池**。加 `ProviderExecutor` 接口和一个 `Manager`，先支持单后端多账号 round-robin + 401 自动 refresh（4.2.6 的骨架）。等多账号跑顺了，再把 round-robin 换成 fill-first，体会 sliding window 配额下的差别。
+- **阶段二（3-4 天）：凭证池**。加 `ProviderExecutor` 接口和一个 `Manager`，先支持单后端多账号 round-robin + 401 自动 refresh。等多账号跑顺了，再加一个 fill-first 选择器（4.2.6 的骨架），对比两者在滑动窗口配额下的差别。
 - **阶段三（2 天）：热更新**。给配置和凭证目录加 fsnotify + 防抖 + 内容哈希（4.3.5 的骨架），做到改账号不重启。
 - **阶段四（按需）**：扩协议（每加一种写若干翻译对子）、加模型级冷却、加 management API。
 
-别一上来就追 6 协议 4 格式的全矩阵。先把"一条路径端到端跑通"，再决定哪个模式对你的场景最值钱。
+别一上来就追 27 个对子的全矩阵。先把一条路径端到端跑通，再决定哪个模式对你的场景有用。
 
 ## 8. 延伸阅读
 
-- [musistudio/claude-code-router](https://github.com/musistudio/claude-code-router)：和本项目方向相反：它是给 Claude Code 客户端做的路由层，让 Claude Code 去调任意 OpenAI 兼容后端。读它和读 CLIProxyAPI 形成"客户端侧 vs 服务端侧"的对照。
+- [musistudio/claude-code-router](https://github.com/musistudio/claude-code-router)：和本项目方向相反，它是给 Claude Code 客户端做的路由层，让 Claude Code 去调任意 OpenAI 兼容后端。读它和读 CLIProxyAPI 形成"客户端侧 vs 服务端侧"的对照。
 - [BerriAI/litellm](https://github.com/BerriAI/litellm)：Python 实现的 LLM 网关，协议翻译走 hub-and-spoke（OpenAI 当 IR）。对照它的 `litellm/llms/*/transformation.py` 和本项目的 N×M，能直观看到两种翻译架构的取舍。
 - [songquanpeng/one-api](https://github.com/songquanpeng/one-api) 与 [Calcium-Ion/new-api](https://github.com/Calcium-Ion/new-api)：计费 + 渠道管理导向的网关，看它们的 channel 模型如何处理多上游调度，补上 CLIProxyAPI 缺失的"商业化运营"那一面。
 - 《AI Token 中转站实战》：正面讲企业级 LLM 网关的鉴权、计费、限流、渠道管理，是 CLIProxyAPI 缺的"商业化运营"那一面的系统展开。

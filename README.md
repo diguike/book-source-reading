@@ -49,6 +49,7 @@
 | [第 6 章　LLM Space：给 Agent 开发者的本地调试工作台](book/06-llm-space.md) | [deer-flow/llm-space](https://github.com/deer-flow/llm-space) | 在没有原生流的通信边界上重建异步迭代器；一套 UI 跑两个运行时；把细粒度事件流折叠成可增量渲染的快照 |
 | [第 7 章　vercel-labs/skills：Agent Skill 的规范、版本与分发](book/07-vercel-skills.md) | [vercel-labs/skills](https://github.com/vercel-labs/skills) | 规范三层结构不一致时以哪层为准；没有 version 字段怎么做版本控制；一份内容投给 N 个工具目录；内网自建分发源 |
 | [第 8 章　claude-for-legal：一个垂直行业的 AI 能力怎么组织](book/08-claude-for-legal.md) | [anthropics/claude-for-legal](https://github.com/anthropics/claude-for-legal) | 垂直领域能力怎么切成插件和技能；私有知识层的模板与实例分离；知识库自进化闭环；多 Agent 编排的权限分层与供应链门禁 |
+| [第 9 章　ATBClone：macOS 应用多开的身份改写与启动劫持](book/09-atbclone.md) | [aitobox/ATBClone](https://github.com/aitobox/ATBClone) | 基于能力探测选择参数隔离或应用包改写；用原生启动器重定向进程状态；重签名、Sandbox 与提权删除的安全边界 |
 
 后续收录的项目会持续追加到这里。完整目录也见 [SUMMARY.md](SUMMARY.md)。
 

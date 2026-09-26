@@ -541,7 +541,7 @@ ref 会被写进锁文件，后续 `update` 带着这个 ref 去比对，所以�
 | `package-lock.json` | 已发布 tarball 的字节（`integrity`） | package.json | 能 |
 | `Cargo.lock` | `.crate` 文件的字节（`checksum`） | Cargo.toml | 能 |
 | `.terraform.lock.hcl` | provider zip 的字节（`hashes`） | **锁文件自己**（`constraints`） | 能 |
-| `go.sum` | **可变 git 目录的内容**（dirhash `h1:`） | go.mod | 能，靠伪版本 |
+| `go.sum` | **可变 git 目录的内容**（dirhash `h1:`） | go.mod | 能，靠 MVS 和导入路径 |
 | `skills-lock.json` | 可变 git 目录的内容（`computedHash`） | 无 | **不能** |
 
 前三个哈希的都是不可变制品，能防篡改。后两个哈希的是可变的 git 目录，性质上只能测漂移。这就是为什么把 skills 简单理解成"npm 少了版本号"会出错，保证强度也不一样。
@@ -550,7 +550,7 @@ ref 会被写进锁文件，后续 `update` 带着这个 ref 去比对，所以�
 
 **dirhash 有明确的编码。** 每个文件先算 sha256，拼成 `<hex>  <name>\n` 逐行排序后整体再哈希，没有 4.3.1 那个拼接歧义。
 
-**伪版本恢复了排序能力。** 上游没打 tag 时，Go 生成 `v0.0.0-20260722120000-c042b9123456` 这样的版本串，把提交时间戳和 SHA 编码进一个可排序的字符串。于是"这份比那份新"这个问题有了答案，而 skills 目前只有"一样"和"不一样"两种状态。
+**版本能比大小。** go.mod 里的 `require` 写的是最低版本，构建时 Go 用最小版本选择（MVS）取满足所有 require 的最低版本；主版本号写进导入路径（`/v2`），所以"跟着 1.x 走"是天然成立的。上游没打 tag 时，Go 生成 `v0.0.0-20260722120000-c042b9123456` 这样的伪版本，把提交时间戳和 SHA 编码成一个可排序的版本号。伪版本只是给未打 tag 的提交起的名字，不是范围约束，但它让"这份比那份新"有了答案。skills 目前只有"一样"和"不一样"两种状态。
 
 **sumdb 提供了独立的信任根。** 校验和被记进一个公开的透明日志，这才把漂移检测升级成了完整性校验。
 
@@ -608,7 +608,7 @@ export function getSkipReason(entry: SkillLockEntry): string {
 }
 ```
 
-这些 skill 会被单独列出来并给出手动更新的命令，没有静默跳过。留意第三行：**`.well-known` 来源永远不检查更新**。4.5.2 会推荐用 well-known 搭内网源，这两件事凑在一起会出问题，到那节再说。
+这些 skill 会被单独列出来并给出手动更新的命令，没有静默跳过。留意第三行：`.well-known` 来源永远不检查更新，4.5.2 搭内网源时会撞上它。
 
 还有一个更隐蔽的洞。GitHub Trees API 在 `recursive=1` 时，条目太多会截断并返回 `truncated: true`，而整个 `src/` 里没有任何地方处理这个字段。在一个大 monorepo 上，免下载的更新检查会静默漏掉 skill：不报错，就是永远显示"已是最新"。再配上匿名请求 60 次/小时且按 IP 计算的限流（一个出口 NAT 后面的团队很容易撞上），这条快路径的可靠性比看起来低。
 
@@ -743,7 +743,7 @@ if (pathsOverlap(skill.path, agentDir)) {
 
 安装流程里有一步是"清空目标目录再写入"，为的是清掉上次安装留下、这次已被删除的文件。如果目标和源是同一个目录，这一步会先把用户的源码删干净。注释里点名了触发场景。只要你的工具会 `rm -rf` 一个由用户输入决定的路径，就该有 `pathsOverlap` 这类检查，它挡的主要是手滑，不是攻击。
 
-安全侧还有一层：所有拼出来的路径都过 `isPathSafe(base, target)`（`installer.ts:73-78`），确认结果仍在 base 之内。配合前面的 `sanitizeName`，`name: ../../.ssh/authorized_keys` 会先被净化成 `.ssh-authorized_keys`，再被路径检查拦一道。净化和校验都做，不二选一。
+安全侧还有一层：所有拼出来的路径都过 `isPathSafe(base, target)`（`installer.ts:73-78`）。它把两个路径 `resolve` 后做字符串前缀比较，能挡住 `../` 这类字面上的越界，但不解析符号链接：base 里如果已经有一个指向外面的链接，经过它写出去的路径照样能通过检查。配合前面的 `sanitizeName`，`name: ../../.ssh/authorized_keys` 会先被净化成 `.ssh-authorized_keys`，再被路径检查拦一道。净化和校验都做，不二选一；要防符号链接逃逸，还得在比较前 `realpath` 一次。
 
 ### 4.5 分发：不靠 registry 的四条通道
 
@@ -857,7 +857,7 @@ digest 校验是真的在跑。我往产物文件末尾追加了一行文字、�
 
 搭静态站的脚本不到 100 行，鉴权和证书这两件事却够占一周。工期都在后者。
 
-**第三，`.well-known` 来源永远不检查更新。** 这条 4.3.4 埋过伏笔，`getSkipReason` 里明写着。所以用 well-known 搭内网源和每周跑 `skills update` 出更新报告这两件事凑不到一起，后者对前者永远是空的。更新提醒得自己做，最省事的是在发布脚本里把 `index.json` 的变更推到群里。
+**第三，`.well-known` 来源永远不检查更新。** `getSkipReason` 里明写着这一条（见 4.3.4）。所以用 well-known 搭内网源和每周跑 `skills update` 出更新报告这两件事凑不到一起，后者对前者永远是空的。更新提醒得自己做，最省事的是在发布脚本里把 `index.json` 的变更推到群里。
 
 #### 4.5.3 schema 怎么演进：三种文件三种策略
 
@@ -1046,7 +1046,7 @@ my-skill  ./.agents/skills/my-skill
 
 两个规避办法：把 `.agents/skills/` 提交进 git（内容本来就该进版本控制），或者在团队文档里把还原命令写成完整的 `skills add`。
 
-第二个是 4.3.2 说过的：`experimental_install` 不校验锁里的哈希，`ref` 又是可选字段。没带 ref 装的 skill，"还原"实际上是去拉上游此刻的 HEAD。把它当 `npm ci` 用会出事。
+第二个是 4.3.2 讲过的：`experimental_install` 不是 `npm ci`，没带 ref 的 skill 会还原成上游此刻的 HEAD。
 
 第三个是遥测默认开。安装行为（来源、skill 名、目标工具）会上报，公司环境里建议在 CI 和开发机的 shell profile 里统一设 `DO_NOT_TRACK=1`。
 
@@ -1072,7 +1072,7 @@ my-skill  ./.agents/skills/my-skill
 
 **skill 本身没有任何签名。** 4.5.3 和第 5 节讲了不少供应链加固，但那全是保护 `skills` 这个 CLI 自己的。GPG 签名签的是 CLI 的发布提交，provenance 证明的是 CLI 包的来源。它分发的 skill 没有签名、没有 provenance、没有作者身份。而 skill 才是那个"以 agent 全权限执行"的东西。这个反差是整个生态目前最大的缺口。
 
-**免下载更新检查会静默漏掉 skill。** GitHub Trees API 在 `recursive=1` 时条目太多会截断并返回 `truncated: true`，而 `src/` 里没有任何地方处理这个字段。大 monorepo 上不会报错，只会永远显示"已是最新"。如果你的 skill 仓库很大，别依赖 `skills update` 的检查结果。
+**免下载更新检查会静默漏掉 skill。** 原因是 4.3.4 末尾说的 Trees API 截断没人处理。skill 仓库很大时，别依赖 `skills update` 的检查结果。
 
 ## 7. 自己搭一套内部 Skill 分发
 
@@ -1086,7 +1086,7 @@ my-skill  ./.agents/skills/my-skill
 
 **接 CI。** 业务仓库的 CI 里加一步还原，注意 6.1 的第一个坑，视情况用完整的 `skills add` 而不是 `experimental_install`。`skills-lock.json` 进 git 并要求 review。CI 里的 `npx skills` 记得钉版本。
 
-**做治理。** 更新提醒不要指望 `skills update`：它不检查 well-known 来源。改成在发布脚本里把 `index.json` 的变更推到群里，由人决定要不要升。别做成自动升级：skill 直接改变 agent 行为，自动升级会让全组 agent 的行为在无人察觉时集体变化。
+**做治理。** 更新提醒按 4.5.2 的办法，由发布脚本把 `index.json` 的变更推到群里，由人决定要不要升。别做成自动升级：skill 直接改变 agent 行为，自动升级会让全组 agent 的行为在无人察觉时集体变化。
 
 整套下来，你自己写的代码只有那个发布脚本和那个推送变更的 job。
 

@@ -16,6 +16,7 @@
 - [第 6 章　LLM Space：给 Agent 开发者的本地调试工作台](book/06-llm-space.md)
 - [第 7 章　vercel-labs/skills：Agent Skill 的规范、版本与分发](book/07-vercel-skills.md)
 - [第 8 章　claude-for-legal：一个垂直行业的 AI 能力怎么组织](book/08-claude-for-legal.md)
+- [第 9 章　ATBClone：macOS 应用多开的身份改写与启动劫持](book/09-atbclone.md)
 
 ## 收录候选(待写)
 
